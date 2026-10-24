@@ -103,7 +103,9 @@ class PortalScraper {
     if (fetch != null) {
       try {
         final doc = parser.parse(await fetch(uri));
-        if (doc.querySelector('input[name="username"], input[type="password"]') ==
+        if (doc.querySelector(
+                  'input[name="username"], input[type="password"]',
+                ) ==
                 null &&
             hasStructure(doc)) {
           return doc;
@@ -472,7 +474,16 @@ class PortalScraper {
     if (pendingPhoto != null) {
       try {
         final dataUri = await pendingPhoto;
-        if (dataUri != null) result['studentImage'] = dataUri;
+        if (dataUri != null) {
+          result['studentImage'] = dataUri;
+        } else {
+          // This resource needs the authenticated browser session. Never
+          // leave a protected URL for the native image cache to retry.
+          // An explicit empty value is intentional: the cache merger keeps
+          // omitted profile fields, so a stale protected URL would otherwise
+          // survive a successful refresh.
+          result['studentImage'] = '';
+        }
       } catch (_) {}
     }
     result['attendance'] = attendance;
@@ -1279,20 +1290,20 @@ class PortalScraper {
       'branch': branch,
       'email': email,
       'phone': phone,
-      'proctorial_notes':
-          doc.querySelectorAll('table.cn-res-table tbody tr').map(
-      (row) {
-        final cells = row
-            .querySelectorAll('td')
-            .map((e) => e.text.trim())
-            .toList();
-        return {
-          'date': cells.isNotEmpty ? cells[0] : '',
-          'sender': cells.length > 1 ? cells[1] : '',
-          'desc': cells.length > 2 ? cells[2] : '',
-        };
-      },
-    ).toList(),
+      'proctorial_notes': doc
+          .querySelectorAll('table.cn-res-table tbody tr')
+          .map((row) {
+            final cells = row
+                .querySelectorAll('td')
+                .map((e) => e.text.trim())
+                .toList();
+            return {
+              'date': cells.isNotEmpty ? cells[0] : '',
+              'sender': cells.length > 1 ? cells[1] : '',
+              'desc': cells.length > 2 ? cells[2] : '',
+            };
+          })
+          .toList(),
     };
   }
 }

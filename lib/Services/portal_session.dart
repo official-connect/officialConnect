@@ -7,6 +7,10 @@ String portalFailureReason(Object error) {
   if (error is PortalSessionExpiredException) return 'session_expired';
   if (error is PortalContentNotReadyException) return 'content_not_ready';
   if (error is FormatException) return 'parse_error';
+  if (error is StateError &&
+      error.message.toString().toLowerCase().contains('cancelled')) {
+    return 'cancelled';
+  }
   if (error is PortalRequestException) {
     final reason = error.reason.toLowerCase();
     if (reason.contains('timed out')) return 'timeout';

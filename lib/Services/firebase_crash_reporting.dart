@@ -22,6 +22,7 @@ class FirebaseCrashReporting {
     'request_error',
     'content_not_ready',
     'cache_write',
+    'cancelled',
     'unknown',
   };
   static const _contextKeys = {
@@ -101,9 +102,7 @@ class FirebaseCrashReporting {
       final text = value?.toString().toLowerCase();
       if (text == null) return null;
       final token = text.length > 32 ? text.substring(0, 32) : text;
-      return RegExp(r'^[a-z0-9][a-z0-9_+\-.]*$').hasMatch(token)
-          ? token
-          : null;
+      return RegExp(r'^[a-z0-9][a-z0-9_+\-.]*$').hasMatch(token) ? token : null;
     }
 
     switch (name) {

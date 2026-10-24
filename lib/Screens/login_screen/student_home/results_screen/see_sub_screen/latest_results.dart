@@ -1,6 +1,6 @@
 import 'dart:convert';
-import 'dart:typed_data';
 
+import 'package:flutter/services.dart';
 import 'package:flutter_inappwebview/flutter_inappwebview.dart';
 import 'package:flutter_neumorphic_plus/flutter_neumorphic.dart';
 import 'package:official_connect/Classes/previous_result.dart';
@@ -110,10 +110,29 @@ class _LatestResultsDetailsState extends State<LatestResultsDetails> {
     }
     final controller = _webController;
     if (controller != null) {
-      await controller.loadUrl(
-        urlRequest: URLRequest(url: WebUri(widget.source.pageUrl)),
-      );
+      try {
+        await controller.loadUrl(
+          urlRequest: URLRequest(url: WebUri(widget.source.pageUrl)),
+        );
+      } on MissingPluginException {
+        await _showWebViewUnavailable();
+      } on PlatformException {
+        await _showWebViewUnavailable();
+      }
     }
+  }
+
+  Future<void> _showWebViewUnavailable() async {
+    if (!mounted) return;
+    setState(() {
+      _stage = _ResultStage.error;
+      _error = 'Results could not be opened on this device. Please try again.';
+    });
+    await SyncDiagnostics.recordResult(
+      source: _sourceName,
+      outcome: 'error',
+      durationMs: _fetchWatch?.elapsedMilliseconds,
+    );
   }
 
   Future<void> _prepareCaptcha(InAppWebViewController controller) async {

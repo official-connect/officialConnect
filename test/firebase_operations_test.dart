@@ -121,10 +121,7 @@ void main() {
       expect(events.single['sync_mode'], 'first_login');
       expect(events.single['duration_ms'], 1234);
       expect(events.single['app_version'], DiagnosticsRelease.appVersion);
-      expect(
-        events.single['release_cohort'],
-        DiagnosticsRelease.releaseCohort,
-      );
+      expect(events.single['release_cohort'], DiagnosticsRelease.releaseCohort);
       expect(events.single['platform'], DiagnosticsRelease.platform);
     },
   );
@@ -348,35 +345,43 @@ void main() {
     expect(events, isEmpty);
   });
 
-  test('result fetch terminal outcomes stay allowlisted without abandonment',
-      () async {
-    final events = <Map<String, Object>>[];
-    SyncDiagnostics.configure((name, parameters) async {
-      events.add({'name': name, ...parameters});
-    });
-    await SyncDiagnostics.setEnabled(true);
+  test(
+    'result fetch terminal outcomes stay allowlisted without abandonment',
+    () async {
+      final events = <Map<String, Object>>[];
+      SyncDiagnostics.configure((name, parameters) async {
+        events.add({'name': name, ...parameters});
+      });
+      await SyncDiagnostics.setEnabled(true);
 
-    await SyncDiagnostics.recordResult(source: 'regular', outcome: 'success');
-    await SyncDiagnostics.recordResult(source: 'regular', outcome: 'error');
-    await SyncDiagnostics.recordResult(
-      source: 'supplementary',
-      outcome: 'network_error',
-    );
-    await SyncDiagnostics.recordResult(source: 'regular', outcome: 'disabled');
-    // Low completion alone is not evidence of abandonment: an unrecognized
-    // outcome must stay 'unknown' rather than inventing an 'abandoned' state.
-    await SyncDiagnostics.recordResult(source: 'regular', outcome: 'abandoned');
+      await SyncDiagnostics.recordResult(source: 'regular', outcome: 'success');
+      await SyncDiagnostics.recordResult(source: 'regular', outcome: 'error');
+      await SyncDiagnostics.recordResult(
+        source: 'supplementary',
+        outcome: 'network_error',
+      );
+      await SyncDiagnostics.recordResult(
+        source: 'regular',
+        outcome: 'disabled',
+      );
+      // Low completion alone is not evidence of abandonment: an unrecognized
+      // outcome must stay 'unknown' rather than inventing an 'abandoned' state.
+      await SyncDiagnostics.recordResult(
+        source: 'regular',
+        outcome: 'abandoned',
+      );
 
-    final outcomes = events.map((event) => event['outcome']).toList();
-    expect(outcomes, [
-      'success',
-      'error',
-      'network_error',
-      'disabled',
-      'unknown',
-    ]);
-    expect(events.toString(), isNot(contains('abandoned')));
-  });
+      final outcomes = events.map((event) => event['outcome']).toList();
+      expect(outcomes, [
+        'success',
+        'error',
+        'network_error',
+        'disabled',
+        'unknown',
+      ]);
+      expect(events.toString(), isNot(contains('abandoned')));
+    },
+  );
 
   test(
     'crash context uses only coarse allowlisted navigation values',
@@ -441,12 +446,7 @@ void main() {
       expect(events.last['reason'], 'unknown');
       expect(events.last['sync_mode'], 'refresh');
       expect(events.last['app_version'], DiagnosticsRelease.appVersion);
-      expect(issues.single, {
-        'operation': 'sync',
-        'stage': 'scraping',
-        'reason': 'unknown',
-        'sync_mode': 'refresh',
-      });
+      expect(issues, isEmpty);
       expect('$events$issues', isNot(contains('PRIVATE_ACCOUNT')));
     },
   );
@@ -682,17 +682,19 @@ void main() {
     await FirebaseCrashReporting.logBreadcrumb('sync:timetable:ok');
   });
 
-  test('crash context carries the app version for release segmentation',
-      () async {
-    DiagnosticsRelease.setReleaseForTesting(appVersion: '1.1.4+12');
-    final contexts = <Map<String, String>>[];
-    SyncDiagnostics.configureCrashContext((values) async {
-      contexts.add(Map.of(values));
-    });
-    await SyncDiagnostics.setEnabled(true);
+  test(
+    'crash context carries the app version for release segmentation',
+    () async {
+      DiagnosticsRelease.setReleaseForTesting(appVersion: '1.1.4+12');
+      final contexts = <Map<String, String>>[];
+      SyncDiagnostics.configureCrashContext((values) async {
+        contexts.add(Map.of(values));
+      });
+      await SyncDiagnostics.setEnabled(true);
 
-    await SyncDiagnostics.recordScreen('home');
+      await SyncDiagnostics.recordScreen('home');
 
-    expect(contexts.single['app_version'], '1.1.4+12');
-  });
+      expect(contexts.single['app_version'], '1.1.4+12');
+    },
+  );
 }

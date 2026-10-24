@@ -90,11 +90,12 @@ void main() {
     );
 
     // Locked-in by design: refresh_finished covers background refresh only.
-    expect(
-      events.map((e) => e['name']),
-      ['login_flow_started', 'sync_section', 'sync_finished',
-        'login_flow_finished'],
-    );
+    expect(events.map((e) => e['name']), [
+      'login_flow_started',
+      'sync_section',
+      'sync_finished',
+      'login_flow_finished',
+    ]);
     expect(events.any((e) => e['name'] == 'refresh_finished'), isFalse);
   });
 
@@ -123,25 +124,28 @@ void main() {
     expect(events[1]['duration_ms'], 1200);
   });
 
-  test('failure path reports crash context, event, and issue', () async {
-    await enable();
+  test(
+    'failure path reports crash context and analytics without a synthetic crash',
+    () async {
+      await enable();
 
-    await SyncDiagnostics.recordFailure(
-      refresh: true,
-      stage: 'scraping',
-      reason: 'timeout',
-    );
+      await SyncDiagnostics.recordFailure(
+        refresh: true,
+        stage: 'scraping',
+        reason: 'timeout',
+      );
 
-    expect(events.map((e) => e['name']), [
-      'sync_finished',
-      'operation_failure',
-    ]);
-    expect(events[0]['failure_reason'], 'timeout');
-    expect(issues.single['reason'], 'timeout');
-    for (final context in contexts) {
-      expect(context['app_version'], '1.1.5+13');
-    }
-  });
+      expect(events.map((e) => e['name']), [
+        'sync_finished',
+        'operation_failure',
+      ]);
+      expect(events[0]['failure_reason'], 'timeout');
+      expect(issues, isEmpty);
+      for (final context in contexts) {
+        expect(context['app_version'], '1.1.5+13');
+      }
+    },
+  );
 
   test('disabled run emits nothing anywhere', () async {
     await SyncDiagnostics.setEnabled(false);
@@ -181,9 +185,7 @@ void main() {
       },
     }, refresh: true);
 
-    final sections = events
-        .where((e) => e['name'] == 'sync_section')
-        .toList();
+    final sections = events.where((e) => e['name'] == 'sync_section').toList();
     expect(sections, hasLength(6));
     expect(sections[0]['duration_bucket'], '1_to_3s');
     expect(sections[1]['duration_bucket'], 'under_1s');

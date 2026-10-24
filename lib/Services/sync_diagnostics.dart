@@ -33,7 +33,9 @@ class DiagnosticsRelease {
   static String get platform {
     final override = _platformOverride?.trim().toLowerCase();
     if (override != null) {
-      return {'android', 'ios', 'web'}.contains(override) ? override : 'unknown';
+      return {'android', 'ios', 'web'}.contains(override)
+          ? override
+          : 'unknown';
     }
     if (kIsWeb) return 'web';
     switch (defaultTargetPlatform) {
@@ -155,6 +157,7 @@ class SyncDiagnostics {
     'request_error',
     'content_not_ready',
     'cache_write',
+    'cancelled',
     'unknown',
   };
   static const _refreshOutcomes = {
@@ -170,7 +173,6 @@ class SyncDiagnostics {
   static DiagnosticsEventSink? _sink;
   static DiagnosticsCollectionToggle? _collectionToggle;
   static DiagnosticsCrashContextSink? _crashContextSink;
-  static DiagnosticsIssueSink? _issueSink;
   static DiagnosticsScreenReporter? _screenReporter;
   static String _currentArea = 'startup';
   static bool _enabled = true;
@@ -200,9 +202,9 @@ class SyncDiagnostics {
     _crashContextSink = sink;
   }
 
-  static void configureIssueReporting(DiagnosticsIssueSink? sink) {
-    _issueSink = sink;
-  }
+  /// Retained as a compatibility seam for Firebase setup and tests. Expected
+  /// sync outcomes are analytics events, not Crashlytics non-fatals.
+  static void configureIssueReporting(DiagnosticsIssueSink? _) {}
 
   /// Sends the bounded screen name through the provider's standard screen API.
   ///
@@ -307,7 +309,9 @@ class SyncDiagnostics {
       'sync_mode': syncMode,
     });
     await _emit('operation_failure', values);
-    await _recordIssue(values);
+    // Recoverable refresh outcomes belong in Analytics and as breadcrumbs on
+    // a real crash, not as synthetic Crashlytics exceptions. Recording each
+    // retry here made ordinary portal/session failures look like app crashes.
   }
 
   static Future<void> recordRefreshOutcome(String outcome) => _emit(
@@ -491,15 +495,6 @@ class SyncDiagnostics {
       await _crashContextSink?.call(enriched);
     } catch (_) {
       debugPrint('Crash context could not be recorded.');
-    }
-  }
-
-  static Future<void> _recordIssue(Map<String, String> values) async {
-    if (!_enabled) return;
-    try {
-      await _issueSink?.call(values);
-    } catch (_) {
-      debugPrint('Operational issue could not be recorded.');
     }
   }
 

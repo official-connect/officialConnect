@@ -140,6 +140,11 @@ class _HomeScreenState extends State<HomeScreen> {
                                             )
                                           : null,
                                       backgroundImage: studentImageProvider,
+                                      // A stale legacy URL can fail after the
+                                      // browser session expires; keep the
+                                      // avatar fallback without a framework
+                                      // error being reported as a crash.
+                                      onBackgroundImageError: (_, __) {},
                                       backgroundColor: sisData.darkMode
                                           ? Colors.white12
                                           : Colors.white70,
