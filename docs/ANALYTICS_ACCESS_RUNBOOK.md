@@ -54,6 +54,34 @@ Do this the week they leave, not "later".
 2. Remove anyone who hasn't contributed in 6 months.
 3. Confirm the Administrator count is 2–3.
 
+## Sync reliability report (monthly, 10 minutes)
+
+Use this report to answer questions such as “what percentage of syncing
+devices experienced a timeout?” without identifying a student.
+
+1. In GA4 Admin → Custom definitions, create the event-scoped dimensions
+   `failure_reason`, `section`, `sync_mode`, and `app_version` if they are
+   not already present. These are bounded app-generated labels; do not add
+   USN, names, portal URLs, or free-text parameters.
+2. In Explore, create a Free form report for the last 28 days with
+   **Active users** as the metric and `failure_reason` as the row.
+3. Filter to `sync_section` where `outcome` is `error` or `partial`, then
+   repeat for `operation_failure` to cover top-level or cache interruptions.
+4. Use **Active users with `sync_finished`** in the same period as the
+   denominator. For each reason: affected-device rate = distinct affected
+   users / distinct syncing users. A device can appear in more than one
+   reason, so bucket percentages are intentionally not expected to sum to
+   100%.
+5. Save the report as **Sync reliability — affected devices** and compare it
+   by `app_version` before and after each release.
+
+Current approved failure buckets are: `session_expired`, `timeout`,
+`network_error`, `browser_not_ready`, `content_not_ready`, `parse_error`,
+`missing_links`, `invalid_content`, `empty_response`, `request_error`,
+`cache_write`, `cancelled`, and `unknown`. `unknown` is a follow-up signal:
+it must be investigated and replaced by a bounded reason, never by logging
+raw exception text or student data.
+
 ## Future automation (not yet built)
 
 - `daily-health` already runs the numbers; a weekly rollup mode plus a cron

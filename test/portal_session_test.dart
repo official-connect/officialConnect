@@ -134,6 +134,10 @@ void main() {
       'timeout',
     );
     expect(
+      portalFailureReason(const SocketException('network unavailable')),
+      'network_error',
+    );
+    expect(
       PortalRequestException(signedUri, 'request failed').toString(),
       isNot(contains('secret-token')),
     );

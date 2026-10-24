@@ -20,6 +20,7 @@ class FirebaseCrashReporting {
     'browser_not_ready',
     'empty_response',
     'request_error',
+    'network_error',
     'content_not_ready',
     'cache_write',
     'cancelled',
