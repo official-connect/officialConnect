@@ -196,10 +196,12 @@ class SyncDiagnostics {
     'unknown',
   };
   static const _refreshOutcomes = {
+    'backoff',
     'success',
     'partial',
     'error',
     'timeout',
+    'cancelled',
     'disabled',
     'missing_login',
     'in_flight',

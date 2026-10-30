@@ -5,6 +5,7 @@ import 'package:official_connect/Providers/sisdata.dart';
 import 'package:official_connect/Screens/login_screen/login_screen.dart';
 import 'package:official_connect/Screens/login_screen/portal_login_screen.dart';
 import 'package:official_connect/Services/firebase_feature_flags.dart';
+import 'package:official_connect/Services/portal_refresh_policy.dart';
 import 'package:official_connect/Services/sync_diagnostics.dart';
 import 'package:provider/provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -43,6 +44,10 @@ void setBackgroundSyncState(
 Future<void> openPortalRefresh(
   BuildContext context, {
   bool allowInteractiveFallback = true,
+  bool automatic = false,
+  @visibleForTesting
+  Widget Function({required ValueChanged<PortalLoginOutcome> onOutcome})?
+  portalScreenBuilderForTesting,
 }) async {
   if (_portalRefreshInFlight) {
     unawaited(SyncDiagnostics.recordRefreshOutcome('in_flight'));
@@ -65,21 +70,30 @@ Future<void> openPortalRefresh(
       }
       return;
     }
-    final sisData = Provider.of<SisData>(context, listen: false);
-    final prefs = await SharedPreferences.getInstance();
-    final usn = prefs.getString('portal_usn') ?? '';
-    final dob = prefs.getString('portal_dob') ?? '';
-    final verificationType =
-        prefs.getString('portal_verification_type') ?? "Father's mobile number";
-    final verificationValue =
-        prefs.getString('portal_verification_value') ?? '';
+    final retryPolicy = PortalRefreshPolicy();
+    if (await retryPolicy.shouldSkip(automatic: automatic)) {
+      unawaited(SyncDiagnostics.recordRefreshOutcome('backoff'));
+      return;
+    }
     if (!context.mounted) return;
-
     Future<void> openFullSyncPage() => Navigator.of(context).push(
       MaterialPageRoute(
         builder: (_) => const LoginScreen(closeAfterSync: true),
       ),
     );
+
+    final sisData = Provider.of<SisData>(context, listen: false);
+    late final String usn;
+    late final String dob;
+    late final String verificationType;
+    late final String verificationValue;
+    final prefs = await SharedPreferences.getInstance();
+    usn = prefs.getString('portal_usn') ?? '';
+    dob = prefs.getString('portal_dob') ?? '';
+    verificationType =
+        prefs.getString('portal_verification_type') ?? "Father's mobile number";
+    verificationValue = prefs.getString('portal_verification_value') ?? '';
+    if (!context.mounted) return;
 
     // Without a complete saved login the user must review the form, so keep
     // the original full-page flow.
@@ -89,50 +103,61 @@ Future<void> openPortalRefresh(
       return;
     }
     setBackgroundSyncState(BackgroundSyncState.updating);
-    if (usn.trim().toUpperCase() == 'DUMMY') {
+
+    late final PortalLoginOutcome outcome;
+    if (portalScreenBuilderForTesting == null &&
+        usn.trim().toUpperCase() == 'DUMMY') {
       await sisData.loadDummyData();
-      unawaited(SyncDiagnostics.recordRefreshOutcome('success'));
-      setBackgroundSyncState(BackgroundSyncState.success);
-      return;
-    }
-
-    // A transparent Navigator route still installs a modal barrier and blocks
-    // the page underneath. Mount the hidden WebView in an IgnorePointer
-    // overlay instead, so cached data and bottom navigation remain usable.
-    final completion = Completer<bool>();
-    late final OverlayEntry entry;
-    entry = OverlayEntry(
-      builder: (_) => IgnorePointer(
-        child: PortalLoginScreen(
-          silent: true,
-          initialUsn: usn.trim().toUpperCase(),
-          initialDob: dob,
-          initialVerificationType: verificationType,
-          initialVerificationValue: verificationValue,
-          reuseSession:
-              sisData.hasData &&
-              sisData.usn.trim().toUpperCase() == usn.trim().toUpperCase(),
-          onFinished: (result) {
-            if (entry.mounted) entry.remove();
-            if (!completion.isCompleted) completion.complete(result);
-          },
-        ),
-      ),
-    );
-    Overlay.of(context, rootOverlay: true).insert(entry);
-    var timedOut = false;
-    final synced = await completion.future.timeout(
-      const Duration(seconds: 90),
-      onTimeout: () {
-        timedOut = true;
+      outcome = PortalLoginOutcome.success;
+    } else {
+      // Keep the WebView in a pointer-transparent overlay so cached data and
+      // bottom navigation remain usable during the refresh.
+      final completion = Completer<PortalLoginOutcome>();
+      late final OverlayEntry entry;
+      void complete(PortalLoginOutcome result) {
+        if (completion.isCompleted) return;
         if (entry.mounted) entry.remove();
-        unawaited(SyncDiagnostics.recordRefreshOutcome('timeout'));
-        return false;
-      },
-    );
-    if (!context.mounted) return;
+        completion.complete(result);
+      }
 
-    if (synced == true) {
+      entry = OverlayEntry(
+        builder: (_) => IgnorePointer(
+          child:
+              portalScreenBuilderForTesting?.call(onOutcome: complete) ??
+              PortalLoginScreen(
+                silent: true,
+                initialUsn: usn.trim().toUpperCase(),
+                initialDob: dob,
+                initialVerificationType: verificationType,
+                initialVerificationValue: verificationValue,
+                reuseSession:
+                    sisData.hasData &&
+                    sisData.usn.trim().toUpperCase() ==
+                        usn.trim().toUpperCase(),
+                onOutcome: complete,
+              ),
+        ),
+      );
+      Overlay.of(context, rootOverlay: true).insert(entry);
+      outcome = await completion.future.timeout(
+        const Duration(seconds: 90),
+        onTimeout: () {
+          if (entry.mounted) entry.remove();
+          return PortalLoginOutcome.timeout;
+        },
+      );
+    }
+    await retryPolicy.recordOutcome(switch (outcome) {
+      PortalLoginOutcome.success => PortalRefreshPolicyOutcome.success,
+      PortalLoginOutcome.cancelled => PortalRefreshPolicyOutcome.cancelled,
+      PortalLoginOutcome.timeout => PortalRefreshPolicyOutcome.timeout,
+      PortalLoginOutcome.networkError =>
+        PortalRefreshPolicyOutcome.networkError,
+      PortalLoginOutcome.updateError => PortalRefreshPolicyOutcome.updateError,
+      PortalLoginOutcome.disabled => PortalRefreshPolicyOutcome.disabled,
+    });
+
+    if (outcome == PortalLoginOutcome.success) {
       final attendanceStatus = sisData.syncStatusFor('attendance');
       final attendanceNeedsAttention =
           attendanceStatus == 'partial' || attendanceStatus == 'error';
@@ -143,6 +168,7 @@ Future<void> openPortalRefresh(
       setBackgroundSyncState(
         hasIssues ? BackgroundSyncState.partial : BackgroundSyncState.success,
       );
+      if (!context.mounted) return;
       messenger
         ..hideCurrentSnackBar()
         ..showSnackBar(
@@ -166,19 +192,48 @@ Future<void> openPortalRefresh(
                 : null,
           ),
         );
-    } else {
-      if (!timedOut) {
-        unawaited(SyncDiagnostics.recordRefreshOutcome('error'));
+    } else if (outcome == PortalLoginOutcome.cancelled) {
+      // A user/app lifecycle interruption is not a portal failure. Leave the
+      // saved information and its screen status undisturbed.
+      unawaited(SyncDiagnostics.recordRefreshOutcome('cancelled'));
+      setBackgroundSyncState(BackgroundSyncState.idle);
+    } else if (outcome == PortalLoginOutcome.disabled) {
+      unawaited(SyncDiagnostics.recordRefreshOutcome('disabled'));
+      setBackgroundSyncState(BackgroundSyncState.idle);
+      if (allowInteractiveFallback) {
+        if (!context.mounted) return;
+        messenger.showSnackBar(
+          const SnackBar(
+            behavior: SnackBarBehavior.floating,
+            content: Text(
+              'Updates are temporarily unavailable. Your saved information is still here.',
+            ),
+          ),
+        );
       }
+    } else {
+      unawaited(
+        SyncDiagnostics.recordRefreshOutcome(
+          outcome == PortalLoginOutcome.timeout ? 'timeout' : 'error',
+        ),
+      );
       setBackgroundSyncState(BackgroundSyncState.error);
-      if (!allowInteractiveFallback) return;
+      if (!allowInteractiveFallback || !context.mounted) return;
+      final message = switch (outcome) {
+        PortalLoginOutcome.networkError =>
+          'Could not reach the website. Your saved information is still available. Please check your connection and try again later.',
+        PortalLoginOutcome.timeout =>
+          'The website took too long to respond. Your saved information is still available. Please try again later.',
+        _ =>
+          'Could not refresh in the background. Your saved information is still available.',
+      };
       messenger
         ..hideCurrentSnackBar()
         ..showSnackBar(
           SnackBar(
             behavior: SnackBarBehavior.floating,
             duration: const Duration(seconds: 5),
-            content: const Text('Could not refresh in the background.'),
+            content: Text(message),
             action: SnackBarAction(
               label: 'Open sync',
               onPressed: () {

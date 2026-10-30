@@ -10,6 +10,15 @@ import 'package:official_connect/Services/sync_diagnostics.dart';
 import 'package:official_connect/Services/firebase_feature_flags.dart';
 import 'package:provider/provider.dart';
 
+enum PortalLoginOutcome {
+  success,
+  cancelled,
+  timeout,
+  networkError,
+  updateError,
+  disabled,
+}
+
 /// Keeps a browser-backed platform view mounted without allowing Android's
 /// platform-view compositor to paint a full-screen portal behind native UI.
 /// The full viewport is used only after the user explicitly asks to see it.
@@ -47,6 +56,7 @@ class PortalLoginScreen extends StatefulWidget {
     this.reuseSession = false,
     this.silent = false,
     this.onFinished,
+    this.onOutcome,
     this.browserForTesting,
     this.browserBuilderForTesting,
   });
@@ -65,6 +75,10 @@ class PortalLoginScreen extends StatefulWidget {
   /// pushing a modal route over the app. Interactive login flows continue to
   /// use the Navigator when no callback is supplied.
   final ValueChanged<bool>? onFinished;
+
+  /// Bounded terminal result for callers that need to distinguish outcomes.
+  /// [onFinished] remains available for existing boolean callers.
+  final ValueChanged<PortalLoginOutcome>? onOutcome;
 
   @visibleForTesting
   final Widget? browserForTesting;
@@ -193,7 +207,12 @@ class _PortalLoginScreenState extends State<PortalLoginScreen>
     unawaited(_recordFinish(error is TimeoutException ? 'timeout' : 'error'));
     if (error is TimeoutException) unawaited(_recordAttention('timeout'));
     if (widget.silent) {
-      _finish(false);
+      final outcome = switch (error) {
+        TimeoutException() => PortalLoginOutcome.timeout,
+        SocketException() => PortalLoginOutcome.networkError,
+        _ => PortalLoginOutcome.updateError,
+      };
+      _finish(false, outcome: outcome);
       return;
     }
     setState(() {
@@ -234,7 +253,7 @@ class _PortalLoginScreenState extends State<PortalLoginScreen>
     unawaited(_recordFinish('timeout'));
     _reportFailure(TimeoutException('Sync deadline exceeded'));
     if (widget.silent) {
-      _finish(false);
+      _finish(false, outcome: PortalLoginOutcome.timeout);
     } else {
       setState(() {
         _showPortal = false;
@@ -322,7 +341,7 @@ class _PortalLoginScreenState extends State<PortalLoginScreen>
       unawaited(_recordAttention('backgrounded'));
       if (widget.silent && !_finished) {
         unawaited(_recordFinish('cancelled'));
-        _finish(false);
+        _finish(false, outcome: PortalLoginOutcome.cancelled);
       }
     }
   }
@@ -335,21 +354,26 @@ class _PortalLoginScreenState extends State<PortalLoginScreen>
       unawaited(_recordAttention('disposed'));
       unawaited(_recordFinish('cancelled'));
       _finished = true;
-      widget.onFinished?.call(false);
+      final finishedCallback = widget.onFinished;
+      final outcomeCallback = widget.onOutcome;
+      finishedCallback?.call(false);
+      outcomeCallback?.call(PortalLoginOutcome.cancelled);
     }
     super.dispose();
   }
 
-  void _finish(bool result) {
+  void _finish(bool result, {required PortalLoginOutcome outcome}) {
     if (_finished) return;
     _stopDeadlineTimers();
     _finished = true;
     final callback = widget.onFinished;
+    final outcomeCallback = widget.onOutcome;
     if (callback != null) {
       callback(result);
-    } else if (mounted) {
+    } else if (outcomeCallback == null && mounted) {
       Navigator.of(context).pop(result);
     }
+    outcomeCallback?.call(outcome);
   }
 
   void _updateStage(String stage, {String? detail}) {
@@ -372,7 +396,7 @@ class _PortalLoginScreenState extends State<PortalLoginScreen>
     if (!mounted || _finished || _deadlineReached) return;
     if (widget.silent) {
       unawaited(_recordFinish('error'));
-      _finish(false);
+      _finish(false, outcome: PortalLoginOutcome.updateError);
       return;
     }
     setState(() {
@@ -389,7 +413,7 @@ class _PortalLoginScreenState extends State<PortalLoginScreen>
     final scrapeWatch = Stopwatch()..start();
     if (!FirebaseFeatureFlags.portalSyncEnabled) {
       unawaited(_recordFinish('disabled'));
-      _finish(false);
+      _finish(false, outcome: PortalLoginOutcome.disabled);
       return;
     }
     _diagnosticStageValue = 'scraping';
@@ -496,7 +520,7 @@ class _PortalLoginScreenState extends State<PortalLoginScreen>
         return true;
       }());
       if (mounted) {
-        _finish(true);
+        _finish(true, outcome: PortalLoginOutcome.success);
       }
     } catch (error) {
       if (_finished || _deadlineReached || !mounted) return;
@@ -507,7 +531,7 @@ class _PortalLoginScreenState extends State<PortalLoginScreen>
         if (widget.silent) {
           // No UI is visible in silent mode; report failure to the caller
           // so it can notify and offer the full sync page instead.
-          _finish(false);
+          _finish(false, outcome: PortalLoginOutcome.updateError);
           return;
         }
         setState(() {
@@ -845,7 +869,10 @@ class _PortalLoginScreenState extends State<PortalLoginScreen>
                           onPressed: () {
                             unawaited(_recordAttention('cancelled'));
                             unawaited(_recordFinish('cancelled'));
-                            _finish(false);
+                            _finish(
+                              false,
+                              outcome: PortalLoginOutcome.cancelled,
+                            );
                           },
                           icon: const Icon(Icons.close),
                         ),
@@ -898,7 +925,10 @@ class _PortalLoginScreenState extends State<PortalLoginScreen>
                                 FilledButton.icon(
                                   onPressed: () {
                                     if (_deadlineReached) {
-                                      _finish(false);
+                                      _finish(
+                                        false,
+                                        outcome: PortalLoginOutcome.timeout,
+                                      );
                                       return;
                                     }
                                     unawaited(

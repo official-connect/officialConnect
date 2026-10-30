@@ -131,7 +131,11 @@ class _UnifiedState extends State<Unified> with WidgetsBindingObserver {
       _automaticRefreshRequested = true;
       WidgetsBinding.instance.addPostFrameCallback((_) {
         if (mounted) {
-          openPortalRefresh(context, allowInteractiveFallback: false);
+          openPortalRefresh(
+            context,
+            allowInteractiveFallback: false,
+            automatic: true,
+          );
         }
       });
     }
@@ -284,9 +288,7 @@ class _UnifiedState extends State<Unified> with WidgetsBindingObserver {
         child: ValueListenableBuilder<int>(
           valueListenable: Unified.screenNumber,
           builder: (context, selected, _) => DecoratedBox(
-            decoration: BoxDecoration(
-              color: navColor,
-            ),
+            decoration: BoxDecoration(color: navColor),
             child: SafeArea(
               top: false,
               child: BottomNavigationBar(
