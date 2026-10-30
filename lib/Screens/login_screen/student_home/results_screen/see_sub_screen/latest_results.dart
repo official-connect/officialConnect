@@ -97,6 +97,17 @@ class _LatestResultsDetailsState extends State<LatestResultsDetails> {
       }
       return;
     }
+    // The result view does not include the hidden WebView in its widget tree,
+    // so a controller retained from the previous fetch may already be
+    // disposed. Capture a controller only while its WebView is still mounted;
+    // refreshing a visible result remounts the WebView and its onCreated
+    // callback starts the fetch with the new controller.
+    final showingResult = _stage == _ResultStage.result && _result != null;
+    final controller = showingResult ? null : _webController;
+    if (showingResult) {
+      _webController = null;
+    }
+
     _fetchWatch = Stopwatch()..start();
     _submitted = false;
     _captchaController.clear();
@@ -108,7 +119,6 @@ class _LatestResultsDetailsState extends State<LatestResultsDetails> {
         _notice = null;
       });
     }
-    final controller = _webController;
     if (controller != null) {
       try {
         await controller.loadUrl(

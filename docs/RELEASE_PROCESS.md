@@ -9,7 +9,7 @@ step.
 Open a PR against `main` that bumps `version:` in `pubspec.yaml`
 (e.g. `1.2.3+4`). CI must be green: the `verify` job
 (`flutter analyze lib test`, `flutter test`, debug APK build) and the
-`history` job (gitleaks scan of the full history). Both are required on
+`history` job (TruffleHog scan of the full history). Both are required on
 `main`. Merge the PR; do not tag until it lands.
 
 ## 2. Tag the release
@@ -20,8 +20,12 @@ Tag exactly the pubspec version and push the tag:
 git tag v1.2.3+4 && git push origin v1.2.3+4
 ```
 
-Only maintainers create release tags. The `Release` workflow refuses a
-tag that does not match `pubspec.yaml`.
+Only repository administrators create or retarget release tags. The active
+GitHub tag ruleset `Maintainer release tags` (26176892) restricts creation,
+update, and deletion of `refs/tags/v*`; only the repository administrator
+role can bypass it. Workflow SHA validation detects stale runs and validates
+the intended commit; it does not itself make tags immutable. The `Release`
+workflow also refuses a tag that does not match `pubspec.yaml`.
 
 ## 3. CI builds and publishes the GitHub Release
 
