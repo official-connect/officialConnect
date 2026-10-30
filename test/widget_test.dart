@@ -151,12 +151,14 @@ void main() {
     () async {
       SharedPreferences.setMockInitialValues({
         'hasData': true,
+        'usn': 'TEST001',
         'timeStamp': DateTime.now().millisecondsSinceEpoch,
         'cacheSchemaVersion': SisData.currentCacheSchemaVersion,
         'data': jsonEncode(_cachedData(includeCurrentSections: true)),
       });
       final sisData = SisData();
       await _waitForCachedData(sisData);
+      expect(sisData.usn, 'TEST001');
       final oldMarks = jsonEncode(sisData.data['marks']);
       await sisData.applyPortalData(
         {
@@ -476,6 +478,9 @@ void main() {
     SharedPreferences.setMockInitialValues({});
     final sisData = SisData();
     await sisData.loadDummyData();
+    // Bind the seeded cache to this test account before checking same-account
+    // partial-update preservation.
+    await sisData.applyPortalData(sisData.data, 'TEST', '2000-01-01');
     final previousAttendance = sisData.attendances.length;
 
     await sisData.applyPortalData(

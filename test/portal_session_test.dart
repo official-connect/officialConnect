@@ -1,4 +1,6 @@
 import 'dart:io';
+import 'dart:async';
+import 'package:flutter/services.dart';
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:html/parser.dart' as parser;
@@ -134,8 +136,31 @@ void main() {
       'timeout',
     );
     expect(
+      portalFailureReason(const SocketException('network unavailable')),
+      'network_error',
+    );
+    expect(
       PortalRequestException(signedUri, 'request failed').toString(),
       isNot(contains('secret-token')),
     );
+  });
+
+  test('common runtime and platform failures have fixed safe categories', () {
+    const secret = 'student_PRIVATE_ACCOUNT https://host/?ksign=PRIVATE_TOKEN';
+    final cases = <Object, String>{
+      TimeoutException(secret): 'timeout',
+      TypeError(): 'type_error',
+      RangeError(secret): 'range_error',
+      PlatformException(code: secret, message: secret): 'platform_error',
+      MissingPluginException(secret): 'platform_unavailable',
+      StateError(secret): 'state_error',
+    };
+    for (final entry in cases.entries) {
+      expect(portalFailureReason(entry.key), entry.value);
+      expect(portalFailureReason(entry.key), isNot(contains(secret)));
+      expect(portalFailureKind(entry.key), matches(RegExp(r'^[a-z_]+$')));
+      expect(portalFailureKind(entry.key), isNot(contains(secret)));
+    }
+    expect(portalFailureReason(StateError('operation cancelled')), 'cancelled');
   });
 }

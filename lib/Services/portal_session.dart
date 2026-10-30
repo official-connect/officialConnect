@@ -1,12 +1,28 @@
 import 'dart:convert';
+import 'dart:async';
+import 'dart:io';
 import 'package:flutter/foundation.dart';
 import 'package:flutter_inappwebview/flutter_inappwebview.dart';
+import 'package:flutter/services.dart';
 import 'package:http/http.dart' as http;
 
 String portalFailureReason(Object error) {
   if (error is PortalSessionExpiredException) return 'session_expired';
   if (error is PortalContentNotReadyException) return 'content_not_ready';
+  if (error is TimeoutException) return 'timeout';
+  if (error is MissingPluginException) return 'platform_unavailable';
+  if (error is PlatformException) return 'platform_error';
+  if (error is SocketException || error is http.ClientException) {
+    return 'network_error';
+  }
   if (error is FormatException) return 'parse_error';
+  if (error is TypeError) return 'type_error';
+  if (error is RangeError) return 'range_error';
+  if (error is StateError &&
+      error.message.toString().toLowerCase().contains('cancelled')) {
+    return 'cancelled';
+  }
+  if (error is StateError) return 'state_error';
   if (error is PortalRequestException) {
     final reason = error.reason.toLowerCase();
     if (reason.contains('timed out')) return 'timeout';
@@ -15,6 +31,24 @@ String portalFailureReason(Object error) {
     return 'request_error';
   }
   return 'unknown';
+}
+
+/// Fixed exception-kind token for telemetry. Never returns a runtime type or
+/// exception text, which can contain URLs, session signatures, or user data.
+String portalFailureKind(Object error) {
+  if (error is PortalSessionExpiredException) return 'session';
+  if (error is PortalContentNotReadyException) return 'content';
+  if (error is PortalRequestException) return 'portal_request';
+  if (error is TimeoutException) return 'timeout';
+  if (error is MissingPluginException) return 'missing_plugin';
+  if (error is PlatformException) return 'platform';
+  if (error is SocketException) return 'socket';
+  if (error is http.ClientException) return 'http_client';
+  if (error is FormatException) return 'format';
+  if (error is TypeError) return 'type';
+  if (error is RangeError) return 'range';
+  if (error is StateError) return 'state';
+  return 'other';
 }
 
 @visibleForTesting

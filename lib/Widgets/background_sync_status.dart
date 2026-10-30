@@ -55,9 +55,8 @@ class BackgroundSyncStatus extends StatelessWidget {
                 label: label,
                 child: Material(
                   key: const ValueKey('background-sync-status'),
-                  color: Theme.of(context).colorScheme.surface,
-                  elevation: 5,
-                  shadowColor: Colors.black26,
+                  color: Colors.transparent,
+                  elevation: 0,
                   borderRadius: BorderRadius.circular(999),
                   child: ConstrainedBox(
                     constraints: const BoxConstraints(maxWidth: 330),

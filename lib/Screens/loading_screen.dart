@@ -18,13 +18,12 @@ class _LoadingScreenState extends State<LoadingScreen> {
     _navigateToUnifiedScreen();
   }
 
-  _navigateToUnifiedScreen() async {
+  Future<void> _navigateToUnifiedScreen() async {
     await Future.delayed(const Duration(milliseconds: 700), () async {
+      if (!mounted) return;
       Navigator.pushReplacement(
         context,
-        MaterialPageRoute(
-          builder: (context) => const Unified(),
-        ),
+        MaterialPageRoute(builder: (context) => const Unified()),
       );
     });
   }
@@ -33,7 +32,10 @@ class _LoadingScreenState extends State<LoadingScreen> {
   Widget build(BuildContext context) {
     final sisData = Provider.of<SisData>(context);
     return Scaffold(
-        backgroundColor: (sisData.darkMode) ? const Color(0xff101114) : Colors.white,
-        body: const LoadingIndicator());
+      backgroundColor: (sisData.darkMode)
+          ? const Color(0xff101114)
+          : Colors.white,
+      body: const LoadingIndicator(),
+    );
   }
 }

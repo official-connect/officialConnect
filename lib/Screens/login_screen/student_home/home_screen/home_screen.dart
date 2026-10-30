@@ -90,9 +90,14 @@ class _HomeScreenState extends State<HomeScreen> {
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.stretch,
                 children: [
-                  Image.asset(
-                    'images/logo.png',
-                    color: sisData.darkMode ? (Colors.white) : null,
+                  Center(
+                    child: ConstrainedBox(
+                      constraints: const BoxConstraints(maxWidth: 360),
+                      child: Image.asset(
+                        'images/logo.png',
+                        color: sisData.darkMode ? (Colors.white) : null,
+                      ),
+                    ),
                   ),
                   Padding(
                     padding: EdgeInsets.symmetric(
@@ -121,7 +126,10 @@ class _HomeScreenState extends State<HomeScreen> {
                                       maxLines: 2,
                                       style: buttonTrailing.copyWith(
                                         // fontFamily: "Lobster",
-                                        fontSize: width * 0.08,
+                                        fontSize: (width * 0.08).clamp(
+                                          22.0,
+                                          32.0,
+                                        ),
                                         fontWeight: FontWeight.normal,
                                       ),
                                     ),
@@ -140,10 +148,18 @@ class _HomeScreenState extends State<HomeScreen> {
                                             )
                                           : null,
                                       backgroundImage: studentImageProvider,
+                                      // A stale legacy URL can fail after the
+                                      // browser session expires; keep the
+                                      // avatar fallback without a framework
+                                      // error being reported as a crash.
+                                      onBackgroundImageError:
+                                          studentImageProvider == null
+                                          ? null
+                                          : (_, __) {},
                                       backgroundColor: sisData.darkMode
                                           ? Colors.white12
                                           : Colors.white70,
-                                      radius: width * 0.1,
+                                      radius: (width * 0.1).clamp(28.0, 48.0),
                                     ),
                                   ),
                                 ],
@@ -157,7 +173,10 @@ class _HomeScreenState extends State<HomeScreen> {
                                   Text(
                                     "Class ",
                                     style: buttonTitle.copyWith(
-                                      fontSize: width * 0.045,
+                                      fontSize: (width * 0.045).clamp(
+                                        14.0,
+                                        19.0,
+                                      ),
                                     ),
                                   ),
                                   Expanded(
@@ -188,7 +207,10 @@ class _HomeScreenState extends State<HomeScreen> {
                                   Text(
                                     "Course ",
                                     style: buttonTitle.copyWith(
-                                      fontSize: width * 0.045,
+                                      fontSize: (width * 0.045).clamp(
+                                        14.0,
+                                        19.0,
+                                      ),
                                     ),
                                   ),
                                   Expanded(
@@ -290,7 +312,9 @@ class _HomeScreenState extends State<HomeScreen> {
                       sisData.proctordata.messages.isEmpty
                           ? Text(
                               "No messages from proctor",
-                              style: subtitle.copyWith(fontSize: width * 0.04),
+                              style: subtitle.copyWith(
+                                fontSize: (width * 0.04).clamp(13.0, 17.0),
+                              ),
                             )
                           : Container(),
                     ],

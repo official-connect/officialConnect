@@ -8,6 +8,9 @@ class CieGraph extends StatefulWidget {
   const CieGraph({Key? key, required this.marks}) : super(key: key);
   final List<Marks> marks;
 
+  static bool hasPlottableMarks(List<Marks> marks) =>
+      marks.any((mark) => _CieGraphState._parseCieValue(mark.finalCie) != null);
+
   @override
   State<CieGraph> createState() => _CieGraphState();
 }
@@ -21,7 +24,8 @@ class _CieGraphState extends State<CieGraph> {
     var s = raw.trim();
     if (s.isEmpty || s == '-') return null;
     s = s.replaceAll('%', '').split('/').first.trim();
-    return double.tryParse(s);
+    final value = double.tryParse(s);
+    return value != null && value.isFinite ? value : null;
   }
 
   @override

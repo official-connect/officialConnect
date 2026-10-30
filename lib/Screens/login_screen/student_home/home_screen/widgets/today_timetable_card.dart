@@ -41,11 +41,13 @@ class TodayTimetableCard extends StatelessWidget {
                     size: 24,
                   ),
                   const SizedBox(width: 10),
-                  Text(
-                    'Today',
-                    style: textStyle.copyWith(
-                      fontSize: 20,
-                      fontWeight: FontWeight.w700,
+                  Expanded(
+                    child: Text(
+                      'Today',
+                      style: textStyle.copyWith(
+                        fontSize: 20,
+                        fontWeight: FontWeight.w700,
+                      ),
                     ),
                   ),
                 ],

@@ -11,6 +11,7 @@ import 'package:official_connect/Screens/login_screen/portal_refresh.dart';
 import 'package:official_connect/Screens/login_screen/student_home/results_screen/syllabus_sub_screen/syllabus_screen.dart';
 import 'package:official_connect/Services/sync_diagnostics.dart';
 import 'package:official_connect/Services/safe_external_link.dart';
+import 'package:official_connect/Services/app_support.dart';
 import 'package:official_connect/Screens/login_screen/student_home/timetable_screen/timetable_screen.dart';
 import 'package:official_connect/Screens/login_screen/student_home/seating_screen/seating_screen.dart';
 
@@ -55,7 +56,7 @@ const campusServiceLinks = <ExploreLink>[
     key: 'app-feedback',
     title: 'Share app feedback',
     subtitle: 'Tell us what could work better',
-    url: 'https://forms.gle/FyF3PZxxonNf8kUz5',
+    url: AppSupport.feedbackUrl,
     icon: Icons.feedback_outlined,
     analyticsFeature: 'app_feedback',
   ),
@@ -169,6 +170,15 @@ class EventsScreen extends StatelessWidget {
     final neumorphicStyle = CustomTheme.neumorphicStyle(context);
     final linearGradientBG = CustomTheme.linearGradientBG(context);
     Future<void> openLink(String url, String feature) async {
+      if (feature == 'app_feedback') {
+        await AppSupport.open(
+          context,
+          action: feature,
+          source: 'explore',
+          launcher: linkLauncher,
+        );
+        return;
+      }
       final uri = Uri.parse(url);
       final launched = await openExternalLink(
         context,

@@ -33,7 +33,9 @@ class DiagnosticsRelease {
   static String get platform {
     final override = _platformOverride?.trim().toLowerCase();
     if (override != null) {
-      return {'android', 'ios', 'web'}.contains(override) ? override : 'unknown';
+      return {'android', 'ios', 'web'}.contains(override)
+          ? override
+          : 'unknown';
     }
     if (kIsWeb) return 'web';
     switch (defaultTargetPlatform) {
@@ -122,6 +124,9 @@ class SyncDiagnostics {
     'fee_payment',
     'campus_helpdesk',
     'app_feedback',
+    'report_bug',
+    'source_code',
+    'rate_app',
     'course_material',
     'syllabi',
     'club_details',
@@ -153,8 +158,41 @@ class SyncDiagnostics {
     'browser_not_ready',
     'empty_response',
     'request_error',
+    'network_error',
     'content_not_ready',
     'cache_write',
+    'cancelled',
+    'state_error',
+    'type_error',
+    'range_error',
+    'platform_error',
+    'platform_unavailable',
+    'unknown',
+  };
+  static const _failureKinds = {
+    'session',
+    'content',
+    'portal_request',
+    'timeout',
+    'missing_plugin',
+    'platform',
+    'socket',
+    'http_client',
+    'format',
+    'type',
+    'range',
+    'state',
+    'other',
+  };
+  static const _diagnosticSections = {..._sections, 'dashboard'};
+  static const _failureSteps = {
+    'read',
+    'parse',
+    'checkpoint',
+    'apply',
+    'persist',
+    'authenticate',
+    'navigate',
     'unknown',
   };
   static const _refreshOutcomes = {
@@ -170,7 +208,6 @@ class SyncDiagnostics {
   static DiagnosticsEventSink? _sink;
   static DiagnosticsCollectionToggle? _collectionToggle;
   static DiagnosticsCrashContextSink? _crashContextSink;
-  static DiagnosticsIssueSink? _issueSink;
   static DiagnosticsScreenReporter? _screenReporter;
   static String _currentArea = 'startup';
   static bool _enabled = true;
@@ -200,9 +237,9 @@ class SyncDiagnostics {
     _crashContextSink = sink;
   }
 
-  static void configureIssueReporting(DiagnosticsIssueSink? sink) {
-    _issueSink = sink;
-  }
+  /// Retained as a compatibility seam for Firebase setup and tests. Expected
+  /// sync outcomes are analytics events, not Crashlytics non-fatals.
+  static void configureIssueReporting(DiagnosticsIssueSink? _) {}
 
   /// Sends the bounded screen name through the provider's standard screen API.
   ///
@@ -263,6 +300,11 @@ class SyncDiagnostics {
     required bool refresh,
     String stage = 'unknown',
     String reason = 'unknown',
+    String? exceptionKind,
+    String? section,
+    String? step,
+    int? durationMs,
+    bool? hasCachedData,
   }) async {
     final safeStage = _loginStages.contains(stage) ? stage : 'unknown';
     final safeReason = _safeFailureReason(reason);
@@ -272,12 +314,20 @@ class SyncDiagnostics {
       'sync_mode': syncMode,
       'failure_stage': safeStage,
       'failure_reason': safeReason,
+      if (exceptionKind != null)
+        'exception_kind': _safeFailureKind(exceptionKind),
+      ..._failureContext(section, step, durationMs, hasCachedData),
     });
     await recordOperationalFailure(
       operation: 'sync',
       stage: safeStage,
       reason: safeReason,
       refresh: refresh,
+      exceptionKind: exceptionKind,
+      section: section,
+      step: step,
+      durationMs: durationMs,
+      hasCachedData: hasCachedData,
     );
   }
 
@@ -286,6 +336,11 @@ class SyncDiagnostics {
     required String stage,
     required String reason,
     required bool refresh,
+    String? exceptionKind,
+    String? section,
+    String? step,
+    int? durationMs,
+    bool? hasCachedData,
   }) async {
     final safeOperation = {'sync', 'cache'}.contains(operation)
         ? operation
@@ -297,17 +352,31 @@ class SyncDiagnostics {
       'operation': safeOperation,
       'stage': safeStage,
       'reason': safeReason,
+      // Share the section/sync report dimension; keep reason for older dashboards.
+      'failure_reason': safeReason,
       'sync_mode': syncMode,
+      if (exceptionKind != null)
+        'exception_kind': _safeFailureKind(exceptionKind),
+      ..._failureContext(section, step, durationMs, hasCachedData),
     };
     await _setCrashContext({
       'app_area': 'login',
       'app_operation': '${safeOperation}_failed',
       'operation_stage': safeStage,
       'failure_reason': safeReason,
+      if (exceptionKind != null)
+        'exception_kind': _safeFailureKind(exceptionKind),
+      if (section != null) 'section': _safeDiagnosticSection(section),
+      if (step != null) 'failure_step': _safeFailureStep(step),
+      if (durationMs != null)
+        'duration_ms': _safeDuration(durationMs).toString(),
+      if (hasCachedData != null) 'has_cached_data': hasCachedData ? '1' : '0',
       'sync_mode': syncMode,
     });
     await _emit('operation_failure', values);
-    await _recordIssue(values);
+    // Recoverable refresh outcomes belong in Analytics and as breadcrumbs on
+    // a real crash, not as synthetic Crashlytics exceptions. Recording each
+    // retry here made ordinary portal/session failures look like app crashes.
   }
 
   static Future<void> recordRefreshOutcome(String outcome) => _emit(
@@ -405,18 +474,42 @@ class SyncDiagnostics {
     'duration_ms': _safeDuration(durationMs),
   });
 
-  static Future<void> recordFeature(String feature) async {
+  static Future<void> recordFeature(
+    String feature, {
+    String? sourceScreen,
+  }) async {
     final safeFeature = _features.contains(feature) ? feature : 'unknown';
-    final sourceScreen = _currentArea;
-    await _setCrashContext({
-      'app_area': _currentArea,
-      'app_operation': safeFeature,
-    });
+    final source = sourceScreen == null
+        ? _currentArea
+        : (_screens.contains(sourceScreen) ? sourceScreen : 'unknown');
+    await _setCrashContext({'app_area': source, 'app_operation': safeFeature});
     await _emit('feature_opened', {
       'feature': safeFeature,
-      'source_screen': sourceScreen,
+      'source_screen': source,
     });
   }
+
+  static Future<void> recordSupportAction({
+    required String action,
+    required String source,
+    required String outcome,
+    int? durationMs,
+  }) => _emit('support_action', {
+    'action':
+        {
+          'app_feedback',
+          'report_bug',
+          'source_code',
+          'rate_app',
+        }.contains(action)
+        ? action
+        : 'unknown',
+    'source_screen': _screens.contains(source) ? source : 'unknown',
+    'outcome': {'tapped', 'opened', 'error'}.contains(outcome)
+        ? outcome
+        : 'unknown',
+    if (durationMs != null) 'duration_ms': _safeDuration(durationMs),
+  });
 
   static Future<void> recordFeatureState(String feature, String state) =>
       _emit('feature_state_shown', {
@@ -494,15 +587,6 @@ class SyncDiagnostics {
     }
   }
 
-  static Future<void> _recordIssue(Map<String, String> values) async {
-    if (!_enabled) return;
-    try {
-      await _issueSink?.call(values);
-    } catch (_) {
-      debugPrint('Operational issue could not be recorded.');
-    }
-  }
-
   static String _safeToken(Object? value) {
     final token = value?.toString().toLowerCase() ?? 'unknown';
     return RegExp(r'^[a-z0-9_]{1,32}$').hasMatch(token) ? token : 'unknown';
@@ -522,6 +606,33 @@ class SyncDiagnostics {
     final token = _safeToken(value);
     return _failureReasons.contains(token) ? token : 'unknown';
   }
+
+  static String _safeFailureKind(Object? value) {
+    final token = _safeToken(value);
+    return _failureKinds.contains(token) ? token : 'other';
+  }
+
+  static String _safeDiagnosticSection(Object? value) {
+    final token = _safeToken(value);
+    return _diagnosticSections.contains(token) ? token : 'unknown';
+  }
+
+  static String _safeFailureStep(Object? value) {
+    final token = _safeToken(value);
+    return _failureSteps.contains(token) ? token : 'unknown';
+  }
+
+  static Map<String, Object> _failureContext(
+    String? section,
+    String? step,
+    int? durationMs,
+    bool? hasCachedData,
+  ) => {
+    if (section != null) 'section': _safeDiagnosticSection(section),
+    if (step != null) 'failure_step': _safeFailureStep(step),
+    if (durationMs != null) 'duration_ms': _safeDuration(durationMs),
+    if (hasCachedData != null) 'has_cached_data': hasCachedData ? 1 : 0,
+  };
 
   static String _safeFlowId(Object? value) {
     final token = value?.toString().toLowerCase() ?? 'unknown';

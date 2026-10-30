@@ -20,9 +20,31 @@ class FirebaseCrashReporting {
     'browser_not_ready',
     'empty_response',
     'request_error',
+    'network_error',
     'content_not_ready',
     'cache_write',
+    'cancelled',
+    'state_error',
+    'type_error',
+    'range_error',
+    'platform_error',
+    'platform_unavailable',
     'unknown',
+  };
+  static const _exceptionKinds = {
+    'session',
+    'content',
+    'portal_request',
+    'timeout',
+    'missing_plugin',
+    'platform',
+    'socket',
+    'http_client',
+    'format',
+    'type',
+    'range',
+    'state',
+    'other',
   };
   static const _contextKeys = {
     'app_area',
@@ -31,6 +53,11 @@ class FirebaseCrashReporting {
     'operation_stage',
     'attention_reason',
     'failure_reason',
+    'exception_kind',
+    'section',
+    'failure_step',
+    'duration_ms',
+    'has_cached_data',
     'sync_mode',
     'app_version',
   };
@@ -101,9 +128,7 @@ class FirebaseCrashReporting {
       final text = value?.toString().toLowerCase();
       if (text == null) return null;
       final token = text.length > 32 ? text.substring(0, 32) : text;
-      return RegExp(r'^[a-z0-9][a-z0-9_+\-.]*$').hasMatch(token)
-          ? token
-          : null;
+      return RegExp(r'^[a-z0-9][a-z0-9_+\-.]*$').hasMatch(token) ? token : null;
     }
 
     switch (name) {
@@ -121,7 +146,9 @@ class FirebaseCrashReporting {
         final operation = token(parameters['operation']);
         final reason = token(parameters['reason']);
         if (operation == null || reason == null) return null;
-        return 'op:$operation:$reason';
+        final kind = token(parameters['exception_kind']);
+        final safeKind = _exceptionKinds.contains(kind) ? kind : null;
+        return 'op:$operation:$reason${safeKind == null ? '' : ':$safeKind'}';
       case 'refresh_finished':
         final outcome = token(parameters['outcome']);
         if (outcome == null) return null;
@@ -152,8 +179,10 @@ class FirebaseCrashReporting {
       final reason = _reasons.contains(values['reason'])
           ? values['reason']!
           : 'unknown';
+      final rawKind = values['exception_kind'];
+      final kind = _exceptionKinds.contains(rawKind) ? rawKind! : 'other';
       await FirebaseCrashlytics.instance.recordError(
-        StateError('operational_failure:$operation:$stage:$reason'),
+        StateError('operational_failure:$operation:$stage:$reason:$kind'),
         StackTrace.current,
         reason: 'Operational app flow failure',
         fatal: false,

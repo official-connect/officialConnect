@@ -58,6 +58,84 @@ void main() {
   };
 
   test(
+    'failure progress identifies the course checkpoint without exposing links',
+    () async {
+      final pages = _FixturePages(fixtures());
+      final steps = <(String, String)>[];
+      final scraper = PortalScraper.forTesting(
+        navigateAndRead: pages.navigateAndRead,
+        onDiagnosticStep: (section, step) => steps.add((section, step)),
+        onMarksReady: (_) async =>
+            throw const FormatException('private payload'),
+      );
+      await expectLater(scraper.scrapeAll(), throwsFormatException);
+      expect(steps.last, ('marks', 'checkpoint'));
+      expect(steps, contains(('attendance', 'navigate')));
+      expect(steps, contains(('marks', 'parse')));
+      expect(steps.toString(), isNot(contains('private payload')));
+      expect(steps.toString(), isNot(contains('https://')));
+    },
+  );
+
+  test('an unavailable dashboard identifies the navigation stage', () async {
+    final steps = <(String, String)>[];
+    await expectLater(
+      PortalScraper.forTesting(
+        navigateAndRead: (_) =>
+            Future.error(const PortalSessionExpiredException()),
+        onDiagnosticStep: (section, step) => steps.add((section, step)),
+      ).scrapeAll(),
+      throwsA(isA<PortalSessionExpiredException>()),
+    );
+    expect(steps.last, ('dashboard', 'navigate'));
+  });
+
+  test(
+    'fresh marks are delivered before a later course and survive cancellation',
+    () async {
+      final responses = fixtures();
+      responses['marks:bad'] = responses['marks:good']!
+          .replaceAll('IS701', 'IS702')
+          .replaceAll('Distributed Systems', 'Networks');
+      final pages = _FixturePages(responses);
+      var active = true;
+      final saved = <Map<String, dynamic>>[];
+      final scraper = PortalScraper.forTesting(
+        navigateAndRead: pages.navigateAndRead,
+        isActive: () => active,
+        onMarksReady: (data) async {
+          saved.add(data);
+          active = false;
+        },
+      );
+      await expectLater(scraper.scrapeAll(), throwsStateError);
+      expect(saved, hasLength(1));
+      expect(saved.single['marks'], hasLength(1));
+      expect(saved.single['_sync']['sections']['marks']['status'], 'partial');
+      expect(saved.single['_sync']['sections']['proctor']['status'], 'pending');
+    },
+  );
+
+  test(
+    'marks checkpoints are independent snapshots of completed courses',
+    () async {
+      final responses = fixtures();
+      responses['marks:bad'] = responses['marks:good']!
+          .replaceAll('IS701', 'IS702')
+          .replaceAll('Distributed Systems', 'Networks');
+      final pages = _FixturePages(responses);
+      final saved = <Map<String, dynamic>>[];
+      await PortalScraper.forTesting(
+        navigateAndRead: pages.navigateAndRead,
+        onMarksReady: (data) async => saved.add(data),
+      ).scrapeAll();
+      expect(saved, hasLength(2));
+      expect(saved.first['marks'], hasLength(1));
+      expect(saved.last['marks'], hasLength(2));
+    },
+  );
+
+  test(
     'attendance is delivered before optional sections and cancellation stops sync',
     () async {
       final pages = _FixturePages(fixtures());
@@ -207,7 +285,7 @@ void main() {
     expect(result['_sync']['sections']['marks']['status'], 'partial');
     expect(
       result['_sync']['sections']['attendance']['failure_reason'],
-      'unknown',
+      'state_error',
     );
   });
 
@@ -343,53 +421,56 @@ void main() {
     expect(result['marks'], hasLength(2));
   });
 
-  test('single-page sections prefer fetch and fall back to navigation', () async {
-    final responses = fixtures();
-    final pages = _FixturePages(responses);
-    final navigated = <Uri>[];
-    final result = await PortalScraper.forTesting(
-      navigateAndRead: (uri) async {
-        navigated.add(uri);
-        return pages.navigateAndRead(uri);
-      },
-      fetchHtml: (uri) async {
-        final task = uri.queryParameters['task'];
-        if (task == 'observation') return responses['proctor']!;
-        if (uri.queryParameters['option'] == 'com_fee') {
-          return responses['fees']!;
-        }
-        if (task == 'seating') return responses['seating']!;
-        if (uri.queryParameters['option'] == 'com_history') {
-          return responses['results']!;
-        }
-        // Timetable fetch fails: navigation must cover it.
-        throw StateError('fetch unavailable');
-      },
-    ).scrapeAll();
-    bool navigatedTask(String task) =>
-        navigated.any((uri) => uri.queryParameters['task'] == task);
-    expect(navigatedTask('observation'), isFalse);
-    expect(navigatedTask('seating'), isFalse);
-    expect(navigatedTask('getResult'), isFalse);
-    expect(
-      navigated.any((uri) => uri.queryParameters['option'] == 'com_fee'),
-      isFalse,
-    );
-    expect(navigatedTask('timetable'), isTrue);
-    for (final section in [
-      'proctor',
-      'fees',
-      'timetable',
-      'seating',
-      'results',
-    ]) {
+  test(
+    'single-page sections prefer fetch and fall back to navigation',
+    () async {
+      final responses = fixtures();
+      final pages = _FixturePages(responses);
+      final navigated = <Uri>[];
+      final result = await PortalScraper.forTesting(
+        navigateAndRead: (uri) async {
+          navigated.add(uri);
+          return pages.navigateAndRead(uri);
+        },
+        fetchHtml: (uri) async {
+          final task = uri.queryParameters['task'];
+          if (task == 'observation') return responses['proctor']!;
+          if (uri.queryParameters['option'] == 'com_fee') {
+            return responses['fees']!;
+          }
+          if (task == 'seating') return responses['seating']!;
+          if (uri.queryParameters['option'] == 'com_history') {
+            return responses['results']!;
+          }
+          // Timetable fetch fails: navigation must cover it.
+          throw StateError('fetch unavailable');
+        },
+      ).scrapeAll();
+      bool navigatedTask(String task) =>
+          navigated.any((uri) => uri.queryParameters['task'] == task);
+      expect(navigatedTask('observation'), isFalse);
+      expect(navigatedTask('seating'), isFalse);
+      expect(navigatedTask('getResult'), isFalse);
       expect(
-        result['_sync']['sections'][section]['status'],
-        'ok',
-        reason: section,
+        navigated.any((uri) => uri.queryParameters['option'] == 'com_fee'),
+        isFalse,
       );
-    }
-  });
+      expect(navigatedTask('timetable'), isTrue);
+      for (final section in [
+        'proctor',
+        'fees',
+        'timetable',
+        'seating',
+        'results',
+      ]) {
+        expect(
+          result['_sync']['sections'][section]['status'],
+          'ok',
+          reason: section,
+        );
+      }
+    },
+  );
 
   test(
     'results read precedes course navigations to preserve the dashboard click',
@@ -479,6 +560,25 @@ void main() {
   });
 
   test(
+    'protected profile photos do not escape as unauthenticated URLs',
+    () async {
+      final responses = fixtures();
+      responses['dashboard'] = responses['dashboard']!.replaceFirst(
+        '</body>',
+        '<img class="uk-preserve-width uk-border" '
+            'src="http://photo.invalid/protected.jpg"></body>',
+      );
+      final pages = _FixturePages(responses);
+      final result = await PortalScraper.forTesting(
+        navigateAndRead: pages.navigateAndRead,
+        fetchDataUri: (_) async => null,
+      ).scrapeAll();
+
+      expect(result['studentImage'], isEmpty);
+    },
+  );
+
+  test(
     'missing course links are structural failures, not empty data',
     () async {
       final values = fixtures();
@@ -542,49 +642,55 @@ void main() {
     expect(result['proctorship']['proctorial_notes'], isEmpty);
   });
 
-  test('proctorship keeps its map shape on failure and disabled paths', () async {
-    // Failure path: no proctor fixture makes navigation throw.
-    final failing = fixtures()..remove('proctor');
-    final failed = await PortalScraper.forTesting(
-      navigateAndRead: _FixturePages(failing).navigateAndRead,
-    ).scrapeAll();
-    expect(failed['_sync']['sections']['proctor']['status'], 'error');
-    expect(failed['proctorship'], isA<Map>());
-    expect(failed['proctorship']['proctorial_notes'], isEmpty);
+  test(
+    'proctorship keeps its map shape on failure and disabled paths',
+    () async {
+      // Failure path: no proctor fixture makes navigation throw.
+      final failing = fixtures()..remove('proctor');
+      final failed = await PortalScraper.forTesting(
+        navigateAndRead: _FixturePages(failing).navigateAndRead,
+      ).scrapeAll();
+      expect(failed['_sync']['sections']['proctor']['status'], 'error');
+      expect(failed['proctorship'], isA<Map>());
+      expect(failed['proctorship']['proctorial_notes'], isEmpty);
 
-    // Disabled path.
-    FirebaseFeatureFlags.setValuesForTesting(const {
-      'scraper_proctor_enabled': false,
-    });
-    final disabled = await PortalScraper.forTesting(
-      navigateAndRead: _FixturePages(fixtures()).navigateAndRead,
-    ).scrapeAll();
-    expect(disabled['_sync']['sections']['proctor']['status'], 'disabled');
-    expect(disabled['proctorship'], isA<Map>());
-    expect(disabled['proctorship']['proctorial_notes'], isEmpty);
-  });
+      // Disabled path.
+      FirebaseFeatureFlags.setValuesForTesting(const {
+        'scraper_proctor_enabled': false,
+      });
+      final disabled = await PortalScraper.forTesting(
+        navigateAndRead: _FixturePages(fixtures()).navigateAndRead,
+      ).scrapeAll();
+      expect(disabled['_sync']['sections']['proctor']['status'], 'disabled');
+      expect(disabled['proctorship'], isA<Map>());
+      expect(disabled['proctorship']['proctorial_notes'], isEmpty);
+    },
+  );
 
-  test('fees with a header-only table reports empty instead of failing', () async {
-    final responses = fixtures();
-    responses['fees'] =
-        '<!doctype html><html><body>'
-        '<table class="cn-pay-table"><thead><tr><th>Year</th><th>Paid</th></tr></thead>'
-        '<tbody></tbody></table></body></html>';
-    final pages = _FixturePages(responses);
-    final result = await PortalScraper.forTesting(
-      navigateAndRead: pages.navigateAndRead,
-    ).scrapeAll();
+  test(
+    'fees with a header-only table reports empty instead of failing',
+    () async {
+      final responses = fixtures();
+      responses['fees'] =
+          '<!doctype html><html><body>'
+          '<table class="cn-pay-table"><thead><tr><th>Year</th><th>Paid</th></tr></thead>'
+          '<tbody></tbody></table></body></html>';
+      final pages = _FixturePages(responses);
+      final result = await PortalScraper.forTesting(
+        navigateAndRead: pages.navigateAndRead,
+      ).scrapeAll();
 
-    expect(result['_sync']['sections']['fees']['status'], 'empty');
-    expect(result['fees'], isEmpty);
-  });
+      expect(result['_sync']['sections']['fees']['status'], 'empty');
+      expect(result['fees'], isEmpty);
+    },
+  );
 
   test('an empty fee page keeps dashboard fees instead of wiping them', () async {
     final responses = fixtures();
     responses['dashboard'] = responses['dashboard']!.replaceFirst(
       '</body>',
       '<table data-section="fees"><thead><tr><th>Academic Year</th><th>Amount Paid</th></tr></thead>'
-      '<tbody><tr><td>2026-27</td><td>1000</td></tr></tbody></table></body>',
+          '<tbody><tr><td>2026-27</td><td>1000</td></tr></tbody></table></body>',
     );
     responses['fees'] =
         '<!doctype html><html><body>'

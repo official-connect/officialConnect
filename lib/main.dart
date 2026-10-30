@@ -4,7 +4,6 @@ import 'package:official_connect/Providers/sisdata.dart';
 import 'package:official_connect/Screens/login_screen/login_screen.dart';
 import 'package:official_connect/Screens/login_screen/student_home/unified_screen.dart';
 import 'package:provider/provider.dart';
-import 'package:responsive_framework/responsive_framework.dart';
 import 'Screens/loading_screen.dart';
 import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/services.dart';
@@ -73,18 +72,8 @@ class _MyAppState extends State<MyApp> with WidgetsBindingObserver {
       providers: [ChangeNotifierProvider(create: (ctx) => SisData())],
       child: MaterialApp(
         debugShowCheckedModeBanner: false,
-        builder: (context, child) => ResponsiveWrapper.builder(
-          child,
-          maxWidth: 1200,
-          minWidth: 480,
-          defaultScale: true,
-          breakpoints: [
-            const ResponsiveBreakpoint.resize(480, name: MOBILE),
-            const ResponsiveBreakpoint.autoScale(800, name: TABLET),
-            const ResponsiveBreakpoint.resize(1000, name: DESKTOP),
-          ],
-          background: Container(color: const Color.fromARGB(0, 0, 0, 0)),
-        ),
+        // Screens adapt to the actual logical viewport. Scaling a minimum
+        // 480px canvas down on phones also shrinks navigation and tap targets.
         title: 'Connect',
         theme: ThemeData(primarySwatch: Colors.blue),
         // home: Unified(),

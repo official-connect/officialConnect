@@ -1,6 +1,7 @@
 // ignore_for_file: dead_code
 
 import 'dart:io';
+import 'dart:async';
 import 'dart:ui' as ui;
 import 'package:flutter/material.dart';
 import 'package:fluttertoast/fluttertoast.dart';
@@ -93,7 +94,8 @@ class SisData with ChangeNotifier {
     if (prefs.containsKey('hasData') && prefs.getBool('hasData') == true) {
       _hasData = true;
       var time = prefs.getInt('timeStamp') ?? 0;
-      _usn = prefs.getString('usn') ?? "";
+      final savedUsn = (prefs.getString('usn') ?? '').trim().toUpperCase();
+      _usn = savedUsn;
       _dob = prefs.getString('dob') ?? "";
       _darkMode = prefs.getBool('darkMode') ?? false;
       // Migrate the old boolean preference: an explicit dark/light choice is
@@ -104,7 +106,16 @@ class SisData with ChangeNotifier {
               ? (_darkMode ? 'dark' : 'light')
               : 'system');
       _diagnosticsEnabled = prefs.getBool('diagnosticsEnabled') ?? true;
-      await FirebaseOperations.setDiagnosticsEnabled(_diagnosticsEnabled);
+      // Apply consent immediately, but native telemetry acknowledgements must
+      // never hold up restoring the academic cache or opening the home screen.
+      unawaited(
+        FirebaseOperations.setDiagnosticsEnabled(
+          _diagnosticsEnabled,
+        ).catchError(
+          (Object _) =>
+              debugPrint('App health preference could not be applied.'),
+        ),
+      );
       debugPrint(
         "data was there before. checking if it is older than 12 hours",
       );
@@ -126,8 +137,17 @@ class SisData with ChangeNotifier {
       }
       try {
         _data = Map<String, dynamic>.from(await convert.jsonDecode(raw) as Map);
-      } catch (e) {
-        debugPrint('cached payload unreadable ($e); resetting');
+        // Older cache payloads stored the account only in SharedPreferences.
+        // Restore that known identity before setVariables derives _usn from
+        // the payload. If the key exists but is invalid, keep identity unknown.
+        if (!_data.containsKey('usn') && savedUsn.isNotEmpty) {
+          _data['usn'] = savedUsn;
+        } else if (_data['usn'] is String &&
+            (_data['usn'] as String).trim().isNotEmpty) {
+          _data['usn'] = (_data['usn'] as String).trim().toUpperCase();
+        }
+      } catch (_) {
+        debugPrint('cached payload unreadable; resetting');
         await prefs.setBool('hasData', false);
         _hasData = false;
         _data = {};
@@ -142,8 +162,8 @@ class SisData with ChangeNotifier {
       final storedSchemaVersion = prefs.getInt(_cacheSchemaVersionKey) ?? 0;
       final missingCurrentSections =
           !_data.containsKey('timetable') || !_data.containsKey('seating');
-      final staleCurrentSections = const ['attendance', 'timetable', 'seating']
-          .any((section) {
+      final staleCurrentSections =
+          const ['attendance', 'marks', 'timetable', 'seating'].any((section) {
             final status = syncStatusFor(section);
             return status == 'error' ||
                 status == 'partial' ||
@@ -191,11 +211,23 @@ class SisData with ChangeNotifier {
   Future<void> applyPortalData(
     Map<String, dynamic> data,
     String usn,
-    String dob,
-  ) async {
-    final previous = Map<String, dynamic>.from(_data);
+    String dob, {
+    void Function(String step)? onStage,
+  }) async {
+    onStage?.call('parse');
+    final normalizedUsn = usn.trim().toUpperCase();
+    final cachedUsn = _usn.trim().toUpperCase();
+    final sameAccount = cachedUsn.isNotEmpty && cachedUsn == normalizedUsn;
+    final previous = sameAccount
+        ? Map<String, dynamic>.from(_data)
+        : <String, dynamic>{};
     final merged = Map<String, dynamic>.from(data);
-    final sections = ((data['_sync'] as Map?)?['sections'] as Map?) ?? {};
+    final sync = Map<String, dynamic>.from(
+      (merged['_sync'] as Map?) ?? const {},
+    );
+    final sections = Map<String, dynamic>.from(
+      (sync['sections'] as Map?) ?? const {},
+    );
     const sectionKeys = {
       'attendance': ['attendance'],
       'marks': ['marks'],
@@ -205,8 +237,40 @@ class SisData with ChangeNotifier {
       'timetable': ['timetable'],
       'seating': ['seating'],
     };
+    final invalidSections = <String>{};
     for (final entry in sectionKeys.entries) {
       final status = (sections[entry.key] as Map?)?['status'];
+      // Error/disabled sections may deliberately use legacy empty-list
+      // placeholders even where the healthy model expects a map.
+      if (status == 'error' || status == 'disabled') continue;
+      for (final key in entry.value) {
+        if (!merged.containsKey(key)) continue;
+        try {
+          _validatePortalSection(key, merged[key]);
+        } catch (_) {
+          invalidSections.add(entry.key);
+          for (final sectionKey in entry.value) {
+            if (previous.containsKey(sectionKey)) {
+              merged[sectionKey] = previous[sectionKey];
+            } else {
+              merged.remove(sectionKey);
+            }
+          }
+          break;
+        }
+      }
+    }
+    for (final entry in sectionKeys.entries) {
+      final sectionStatus = Map<String, dynamic>.from(
+        (sections[entry.key] as Map?) ?? const {},
+      );
+      final status = sectionStatus['status'];
+      if (invalidSections.contains(entry.key)) {
+        sectionStatus['status'] = 'error';
+        sectionStatus['failure_reason'] = 'parse_error';
+        sections[entry.key] = sectionStatus;
+        continue;
+      }
       if (status == 'error' || status == 'disabled') {
         for (final key in entry.value) {
           if (previous.containsKey(key)) merged[key] = previous[key];
@@ -221,6 +285,11 @@ class SisData with ChangeNotifier {
         );
       }
     }
+    if (invalidSections.isNotEmpty) {
+      sync['sections'] = sections;
+      sync['outcome'] = 'partial';
+      merged['_sync'] = sync;
+    }
     // A partial profile update should not blank fields already shown by the
     // app. Successful empty data sections are still allowed to replace cache.
     for (final entry in previous.entries) {
@@ -228,24 +297,26 @@ class SisData with ChangeNotifier {
         merged[entry.key] = entry.value;
       }
     }
-    merged['usn'] = usn.toUpperCase();
+    merged['usn'] = normalizedUsn;
     _data = merged;
-    _usn = usn.toUpperCase();
+    _usn = normalizedUsn;
     _dob = dob;
     _hasData = true;
     isValidData = true;
-    final unresolvedRefresh = const ['attendance', 'timetable', 'seating'].any((
-      section,
-    ) {
-      final status = (sections[section] as Map?)?['status'];
-      return status == 'error' || status == 'partial' || status == 'pending';
-    });
+    final unresolvedRefresh =
+        const ['attendance', 'marks', 'timetable', 'seating'].any((section) {
+          final status = (sections[section] as Map?)?['status'];
+          return status == 'error' ||
+              status == 'partial' ||
+              status == 'pending';
+        });
     needToUpdate = unresolvedRefresh;
     await setVariables();
     if (!isValidData || _data.isEmpty) {
       throw const FormatException('Portal data is incompatible with the app');
     }
     final prefs = await SharedPreferences.getInstance();
+    onStage?.call('persist');
     await prefs.setString('data', convert.jsonEncode(merged));
     await prefs.setString('usn', _usn);
     await prefs.setString('dob', _dob);
@@ -253,6 +324,43 @@ class SisData with ChangeNotifier {
     await prefs.setInt('timeStamp', DateTime.now().millisecondsSinceEpoch);
     await prefs.setInt(_cacheSchemaVersionKey, currentCacheSchemaVersion);
     notifyListeners();
+  }
+
+  void _validatePortalSection(String key, Object? value) {
+    switch (key) {
+      case 'attendance':
+        if (value is! List) throw const FormatException();
+        Attendance.getList(value);
+      case 'marks':
+        if (value is! List) throw const FormatException();
+        Marks.getList(value);
+      case 'fees':
+        if (value is! List) throw const FormatException();
+        FeesData.getList(value);
+      case 'refunds':
+        if (value is! List || value.any((item) => item is! Map)) {
+          throw const FormatException();
+        }
+      case 'prevResults':
+        if (value is! List) throw const FormatException();
+        for (final result in value) {
+          if (result is! Map || result['results'] is! List) {
+            throw const FormatException();
+          }
+        }
+        if (PreviousResult.getList(value).length != value.length) {
+          throw const FormatException();
+        }
+      case 'proctorship':
+        if (value is List && value.isEmpty) return;
+        if (value is! Map) throw const FormatException();
+        SisProctorData.proctorData(value);
+      case 'timetable':
+      case 'seating':
+        if (value is! List || value.any((item) => item is! Map)) {
+          throw const FormatException();
+        }
+    }
   }
 
   List<dynamic> _mergePartialCourseData(
@@ -374,8 +482,8 @@ class SisData with ChangeNotifier {
 
       _downloadLink = _data["downloadLink"] ?? '';
       if (debug) debugPrint("downloadLink");
-    } catch (e) {
-      debugPrint(e.toString());
+    } catch (_) {
+      debugPrint('student data could not be parsed');
       _hasData = true;
       isValidData = false;
 

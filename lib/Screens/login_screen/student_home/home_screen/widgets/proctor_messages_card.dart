@@ -44,7 +44,9 @@ class ProctorMessagesCard extends StatelessWidget {
             collapsedIconColor: isDark ? Colors.white : Colors.black,
             title: Text(
               messageData.from,
-              style: buttonTrailing.copyWith(fontSize: width * 0.06),
+              style: buttonTrailing.copyWith(
+                fontSize: (width * 0.06).clamp(18.0, 24.0),
+              ),
             ),
             subtitle: Text(messageData.date, style: subtitle),
             children: [

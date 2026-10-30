@@ -1,6 +1,6 @@
 import 'dart:convert';
-import 'dart:typed_data';
 
+import 'package:flutter/services.dart';
 import 'package:flutter_inappwebview/flutter_inappwebview.dart';
 import 'package:flutter_neumorphic_plus/flutter_neumorphic.dart';
 import 'package:official_connect/Classes/previous_result.dart';
@@ -97,6 +97,17 @@ class _LatestResultsDetailsState extends State<LatestResultsDetails> {
       }
       return;
     }
+    // The result view does not include the hidden WebView in its widget tree,
+    // so a controller retained from the previous fetch may already be
+    // disposed. Capture a controller only while its WebView is still mounted;
+    // refreshing a visible result remounts the WebView and its onCreated
+    // callback starts the fetch with the new controller.
+    final showingResult = _stage == _ResultStage.result && _result != null;
+    final controller = showingResult ? null : _webController;
+    if (showingResult) {
+      _webController = null;
+    }
+
     _fetchWatch = Stopwatch()..start();
     _submitted = false;
     _captchaController.clear();
@@ -108,12 +119,30 @@ class _LatestResultsDetailsState extends State<LatestResultsDetails> {
         _notice = null;
       });
     }
-    final controller = _webController;
     if (controller != null) {
-      await controller.loadUrl(
-        urlRequest: URLRequest(url: WebUri(widget.source.pageUrl)),
-      );
+      try {
+        await controller.loadUrl(
+          urlRequest: URLRequest(url: WebUri(widget.source.pageUrl)),
+        );
+      } on MissingPluginException {
+        await _showWebViewUnavailable();
+      } on PlatformException {
+        await _showWebViewUnavailable();
+      }
     }
+  }
+
+  Future<void> _showWebViewUnavailable() async {
+    if (!mounted) return;
+    setState(() {
+      _stage = _ResultStage.error;
+      _error = 'Results could not be opened on this device. Please try again.';
+    });
+    await SyncDiagnostics.recordResult(
+      source: _sourceName,
+      outcome: 'error',
+      durationMs: _fetchWatch?.elapsedMilliseconds,
+    );
   }
 
   Future<void> _prepareCaptcha(InAppWebViewController controller) async {
