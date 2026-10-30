@@ -73,8 +73,10 @@ check_static_config() {
 
 check_native_elfs() {
   local archive="$1"
-  local readelf temp_dir library alignment found=0
+  local readelf temp_dir library found=0
   [[ -f "$archive" ]] || die "artifact not found: $archive"
+  python3 "$SCRIPT_DIR/validate_android_native_libs.py" --release "$archive" || \
+    die "Android artifact native-library validation failed"
   readelf="$(latest_tool '*/ndk/*/toolchains/llvm/prebuilt/*/bin/llvm-readelf')"
   [[ -x "$readelf" ]] || die "llvm-readelf not found in the Android NDK"
   temp_dir="$(mktemp -d "${TMPDIR:-/tmp}/officialconnect-elf.XXXXXX")"
@@ -82,9 +84,8 @@ check_native_elfs() {
   unzip -qq "$archive" '*.so' -d "$temp_dir"
   while IFS= read -r -d '' library; do
     found=1
-    while IFS= read -r alignment; do
-      (( alignment >= 0x4000 )) || die "native library lacks 16 KB LOAD alignment: ${library#"$temp_dir/"}"
-    done < <("$readelf" -lW "$library" | awk '$1 == "LOAD" { print $NF }')
+    python3 "$SCRIPT_DIR/validate_elf_load_segments.py" "$readelf" "$library" >/dev/null || \
+      die "native ELF LOAD alignment validation failed: ${library#"$temp_dir/"}"
   done < <(find "$temp_dir" -type f -name '*.so' -print0)
   [[ "$found" -eq 1 ]] || die "no native libraries found in $archive"
   trap - RETURN

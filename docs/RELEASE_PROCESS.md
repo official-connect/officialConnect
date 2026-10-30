@@ -38,6 +38,25 @@ To validate without publishing: Actions → Release → Run workflow
 (dry run — artifacts land on the workflow run only). A manual run with
 `publish` set also creates the Release; it is maintainer-only.
 
+The release artifact check verifies that every native ABI packaged in the APK
+or AAB base module contains both `libflutter.so` and `libapp.so`. The generic
+structural validator requires `libflutter.so`; the release check enables its
+release mode, which also requires `libapp.so`. For an AAB it ignores optional
+feature modules when checking Flutter startup libraries; a library present
+only in a feature module cannot satisfy the base app. The ELF check fails if
+`llvm-readelf` exits unsuccessfully, reports malformed output, reports no LOAD
+segments, or finds any LOAD alignment below 16 KB. APKs also receive the ZIP
+alignment check. Test these validators with synthetic artifacts without
+building or signing an app:
+
+```sh
+python3 -m unittest discover -s scripts/tests -p 'test_*.py'
+```
+
+These checks prove what is present in the inspected artifact. They do not
+identify the cause of a device-specific `MissingLibraryException`; compare the
+artifact actually delivered to that device and its installed split APK set.
+
 At this point the release exists on GitHub only. No user receives it
 until step 4.
 

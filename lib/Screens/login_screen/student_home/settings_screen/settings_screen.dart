@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'package:flutter/foundation.dart';
 
 import 'package:official_connect/Providers/themes.dart';
 import 'package:official_connect/Screens/login_screen/portal_refresh.dart';
@@ -8,11 +9,12 @@ import 'package:provider/provider.dart';
 import 'package:official_connect/Providers/sisdata.dart';
 import 'package:flutter_neumorphic_plus/flutter_neumorphic.dart';
 import 'package:official_connect/Services/sync_diagnostics.dart';
-
-const double version = 1;
+import 'package:official_connect/Services/app_support.dart';
+import 'package:official_connect/Services/safe_external_link.dart';
 
 class SettingsInfo extends StatelessWidget {
-  const SettingsInfo({Key? key}) : super(key: key);
+  const SettingsInfo({Key? key, this.linkLauncher}) : super(key: key);
+  final ExternalLinkLauncher? linkLauncher;
 
   @override
   Widget build(BuildContext context) {
@@ -242,6 +244,77 @@ class SettingsInfo extends StatelessWidget {
                     ),
                   ),
                 ),
+                const SizedBox(height: 20),
+                Align(
+                  alignment: Alignment.centerLeft,
+                  child: Text('Help & feedback', style: buttonTrailing),
+                ),
+                const SizedBox(height: 8),
+                for (final (action, label, subtitle, icon) in [
+                  (
+                    'app_feedback',
+                    'Share feedback',
+                    'Tell us what could work better',
+                    Icons.feedback_outlined,
+                  ),
+                  (
+                    'report_bug',
+                    'Report a bug',
+                    'Open a bug report on GitHub',
+                    Icons.bug_report_outlined,
+                  ),
+                  if (!kIsWeb &&
+                      defaultTargetPlatform == TargetPlatform.android)
+                    (
+                      'rate_app',
+                      'Rate the app',
+                      'Open our Play Store listing',
+                      Icons.star_outline_rounded,
+                    ),
+                  (
+                    'source_code',
+                    'Source code',
+                    'Explore the project and contribute',
+                    Icons.code_rounded,
+                  ),
+                ])
+                  Padding(
+                    padding: const EdgeInsets.symmetric(vertical: 5),
+                    child: NeumorphicButton(
+                      key: ValueKey('support-$action'),
+                      style: neumorphicStyle,
+                      onPressed: () => unawaited(
+                        AppSupport.open(
+                          context,
+                          action: action,
+                          source: 'settings',
+                          launcher: linkLauncher,
+                        ),
+                      ),
+                      child: ListTile(
+                        contentPadding: const EdgeInsets.symmetric(
+                          horizontal: 8,
+                        ),
+                        leading: Icon(
+                          icon,
+                          color: const Color(0xffd93b3f),
+                          size: 28,
+                        ),
+                        title: Text(label, style: buttonTitle),
+                        subtitle: Text(
+                          subtitle,
+                          style: CustomTheme.buttonSubtitle(context),
+                        ),
+                        trailing: Icon(
+                          Icons.open_in_new,
+                          size: 18,
+                          color: sisData.darkMode
+                              ? Colors.white70
+                              : Colors.black54,
+                        ),
+                      ),
+                    ),
+                  ),
                 SizedBox(height: height * 0.035),
                 Center(
                   child: Row(
@@ -302,11 +375,6 @@ class SettingsInfo extends StatelessWidget {
                   ),
                 ),
                 SizedBox(height: height * 0.015),
-                if (sisData.ver == version)
-                  Text(
-                    "Currently using version " + version.toString(),
-                    style: CustomTheme.textStyle(context),
-                  ),
                 SizedBox(height: height * 0.07),
               ],
             ),

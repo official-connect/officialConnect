@@ -3,6 +3,7 @@ import 'dart:async';
 import 'package:flutter_neumorphic_plus/flutter_neumorphic.dart';
 import 'package:flutter_spinkit/flutter_spinkit.dart';
 import 'package:official_connect/Providers/sisdata.dart';
+import 'package:official_connect/Providers/themes.dart';
 import 'package:official_connect/Screens/login_screen/login_screen.dart';
 import 'package:official_connect/Screens/login_screen/student_home/attendance_screen/attendance_screen.dart';
 import 'package:official_connect/Screens/login_screen/student_home/events_screen/events_screen.dart';
@@ -135,36 +136,55 @@ class _UnifiedState extends State<Unified> with WidgetsBindingObserver {
       });
     }
 
-    final navColor = sisData.darkMode
-        ? Colors.black
-        : NeumorphicColors.background;
+    // Continue the page's bottom surface through the refresh footer and nav.
+    final navColor = CustomTheme.linearGradientBG(context).colors.last;
     final backgroundColor = sisData.darkMode
         ? const Color(0xff101114)
         : Colors.white;
     // Width-based: phones keep the established bottom navigation while
     // tablet widths get a persistent NavigationRail with constrained
     // content instead of stretched phone UI.
-    final isTablet =
-        MediaQuery.sizeOf(context).width >= tabletBreakpoint;
-    final content = Stack(
+    final isTablet = MediaQuery.sizeOf(context).width >= tabletBreakpoint;
+    final content = Column(
       children: [
-        PageView(
-          physics: const BouncingScrollPhysics(),
-          controller: _pageController,
-          onPageChanged: _onPageChanged,
-          children: [
-            const EventsScreen(),
-            ResultsScreen(_showSee),
-            const HomeScreen(),
-            const AttendanceInfo(),
-            const SettingsInfo(),
-          ],
+        Expanded(
+          child: PageView(
+            physics: const BouncingScrollPhysics(),
+            controller: _pageController,
+            onPageChanged: _onPageChanged,
+            children: [
+              const EventsScreen(),
+              ResultsScreen(_showSee),
+              const HomeScreen(),
+              const AttendanceInfo(),
+              const SettingsInfo(),
+            ],
+          ),
         ),
-        const Positioned(
-          left: 16,
-          right: 16,
-          bottom: 12,
-          child: Center(child: BackgroundSyncStatus()),
+        ValueListenableBuilder<BackgroundSyncState>(
+          valueListenable: backgroundSyncState,
+          builder: (context, syncState, _) =>
+              syncState == BackgroundSyncState.idle
+              ? const SizedBox.shrink()
+              : Theme(
+                  data: Theme.of(context).copyWith(
+                    colorScheme: ColorScheme.fromSeed(
+                      seedColor: const Color(0xffba3237),
+                      brightness: sisData.darkMode
+                          ? Brightness.dark
+                          : Brightness.light,
+                    ),
+                  ),
+                  child: ColoredBox(
+                    color: navColor,
+                    child: const Padding(
+                      // Natural height also accommodates multiline accessibility
+                      // text without covering the scrollable page or navigation.
+                      padding: EdgeInsets.fromLTRB(16, 8, 16, 12),
+                      child: Center(child: BackgroundSyncStatus()),
+                    ),
+                  ),
+                ),
         ),
       ],
     );
@@ -194,9 +214,7 @@ class _UnifiedState extends State<Unified> with WidgetsBindingObserver {
                       size: 29,
                     ),
                     unselectedIconTheme: IconThemeData(
-                      color: sisData.darkMode
-                          ? Colors.white70
-                          : Colors.black54,
+                      color: sisData.darkMode ? Colors.white70 : Colors.black54,
                       size: 29,
                     ),
                     selectedLabelTextStyle: const TextStyle(
@@ -208,9 +226,7 @@ class _UnifiedState extends State<Unified> with WidgetsBindingObserver {
                     unselectedLabelTextStyle: TextStyle(
                       fontFamily: 'Comfortaa',
                       fontSize: 11,
-                      color: sisData.darkMode
-                          ? Colors.white70
-                          : Colors.black54,
+                      color: sisData.darkMode ? Colors.white70 : Colors.black54,
                     ),
                     destinations: [
                       for (final destination in _destinations)
@@ -270,13 +286,6 @@ class _UnifiedState extends State<Unified> with WidgetsBindingObserver {
           builder: (context, selected, _) => DecoratedBox(
             decoration: BoxDecoration(
               color: navColor,
-              boxShadow: [
-                BoxShadow(
-                  color: Colors.black.withValues(alpha: 0.08),
-                  blurRadius: 12,
-                  offset: const Offset(0, -3),
-                ),
-              ],
             ),
             child: SafeArea(
               top: false,

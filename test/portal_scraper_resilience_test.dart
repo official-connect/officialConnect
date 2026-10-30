@@ -58,6 +58,84 @@ void main() {
   };
 
   test(
+    'failure progress identifies the course checkpoint without exposing links',
+    () async {
+      final pages = _FixturePages(fixtures());
+      final steps = <(String, String)>[];
+      final scraper = PortalScraper.forTesting(
+        navigateAndRead: pages.navigateAndRead,
+        onDiagnosticStep: (section, step) => steps.add((section, step)),
+        onMarksReady: (_) async =>
+            throw const FormatException('private payload'),
+      );
+      await expectLater(scraper.scrapeAll(), throwsFormatException);
+      expect(steps.last, ('marks', 'checkpoint'));
+      expect(steps, contains(('attendance', 'navigate')));
+      expect(steps, contains(('marks', 'parse')));
+      expect(steps.toString(), isNot(contains('private payload')));
+      expect(steps.toString(), isNot(contains('https://')));
+    },
+  );
+
+  test('an unavailable dashboard identifies the navigation stage', () async {
+    final steps = <(String, String)>[];
+    await expectLater(
+      PortalScraper.forTesting(
+        navigateAndRead: (_) =>
+            Future.error(const PortalSessionExpiredException()),
+        onDiagnosticStep: (section, step) => steps.add((section, step)),
+      ).scrapeAll(),
+      throwsA(isA<PortalSessionExpiredException>()),
+    );
+    expect(steps.last, ('dashboard', 'navigate'));
+  });
+
+  test(
+    'fresh marks are delivered before a later course and survive cancellation',
+    () async {
+      final responses = fixtures();
+      responses['marks:bad'] = responses['marks:good']!
+          .replaceAll('IS701', 'IS702')
+          .replaceAll('Distributed Systems', 'Networks');
+      final pages = _FixturePages(responses);
+      var active = true;
+      final saved = <Map<String, dynamic>>[];
+      final scraper = PortalScraper.forTesting(
+        navigateAndRead: pages.navigateAndRead,
+        isActive: () => active,
+        onMarksReady: (data) async {
+          saved.add(data);
+          active = false;
+        },
+      );
+      await expectLater(scraper.scrapeAll(), throwsStateError);
+      expect(saved, hasLength(1));
+      expect(saved.single['marks'], hasLength(1));
+      expect(saved.single['_sync']['sections']['marks']['status'], 'partial');
+      expect(saved.single['_sync']['sections']['proctor']['status'], 'pending');
+    },
+  );
+
+  test(
+    'marks checkpoints are independent snapshots of completed courses',
+    () async {
+      final responses = fixtures();
+      responses['marks:bad'] = responses['marks:good']!
+          .replaceAll('IS701', 'IS702')
+          .replaceAll('Distributed Systems', 'Networks');
+      final pages = _FixturePages(responses);
+      final saved = <Map<String, dynamic>>[];
+      await PortalScraper.forTesting(
+        navigateAndRead: pages.navigateAndRead,
+        onMarksReady: (data) async => saved.add(data),
+      ).scrapeAll();
+      expect(saved, hasLength(2));
+      expect(saved.first['marks'], hasLength(1));
+      expect(saved.last['marks'], hasLength(2));
+    },
+  );
+
+  test(
     'attendance is delivered before optional sections and cancellation stops sync',
     () async {
       final pages = _FixturePages(fixtures());
@@ -207,7 +285,7 @@ void main() {
     expect(result['_sync']['sections']['marks']['status'], 'partial');
     expect(
       result['_sync']['sections']['attendance']['failure_reason'],
-      'unknown',
+      'state_error',
     );
   });
 

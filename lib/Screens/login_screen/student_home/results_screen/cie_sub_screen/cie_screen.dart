@@ -177,6 +177,15 @@ class CIEScreen extends StatelessWidget {
                   ),
                 ),
               )
+            : !CieGraph.hasPlottableMarks(sisData.marks)
+            ? Padding(
+                padding: const EdgeInsets.symmetric(vertical: 20),
+                child: Text(
+                  'Marks haven’t been published yet',
+                  textAlign: TextAlign.center,
+                  style: buttonTitle,
+                ),
+              )
             : SizedBox(
                 height: (220.0 + sisData.marks.length * 8).clamp(240.0, 300.0),
                 child: CieGraph(marks: sisData.marks),

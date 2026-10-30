@@ -12,7 +12,9 @@ class PortalScraper {
   PortalScraper(
     PortalSession session, {
     this.onProgress,
+    this.onDiagnosticStep,
     this.onAttendanceReady,
+    this.onMarksReady,
     this.isActive,
   }) : _navigateAndRead = session.navigateAndRead,
        _fetchHtml = ((uri) => session.fetchHtml(
@@ -32,7 +34,9 @@ class PortalScraper {
     Future<String> Function(Uri uri)? fetchHtml,
     Future<String?> Function()? readCurrentDashboard,
     this.onProgress,
+    this.onDiagnosticStep,
     this.onAttendanceReady,
+    this.onMarksReady,
     this.isActive,
     this.pageReadTimeout = const Duration(seconds: 40),
   }) : _navigateAndRead = navigateAndRead,
@@ -46,6 +50,7 @@ class PortalScraper {
   /// refresh degrades to cached data per section rather than stalling whole.
   Future<String> _readPage(Uri uri) async {
     _checkActive();
+    onDiagnosticStep?.call(_sectionFor(uri), 'navigate');
     try {
       return await _navigateAndRead(uri).timeout(pageReadTimeout);
     } on TimeoutException {
@@ -58,8 +63,21 @@ class PortalScraper {
   final Future<String?> Function(Uri uri) _fetchDataUri;
   final Future<String?> Function()? _readCurrentDashboard;
   final void Function(String stage)? onProgress;
+  final void Function(String section, String step)? onDiagnosticStep;
   final Future<void> Function(Map<String, dynamic> data)? onAttendanceReady;
+  final Future<void> Function(Map<String, dynamic> data)? onMarksReady;
   final bool Function()? isActive;
+
+  String _sectionFor(Uri uri) => switch (uri.queryParameters['task']) {
+    'attendencelist' => 'attendance',
+    'ciedetails' => 'marks',
+    'getResult' => 'results',
+    'observation' => 'proctor',
+    'studFee' => 'fees',
+    'timetable' => 'timetable',
+    'seating' => 'seating',
+    _ => uri.queryParameters['option'] == 'com_fee' ? 'fees' : 'dashboard',
+  };
 
   void _checkActive() {
     if (isActive?.call() == false) throw StateError('Portal sync cancelled');
@@ -81,6 +99,7 @@ class PortalScraper {
     final shortcut = _readCurrentDashboard;
     if (shortcut != null) {
       try {
+        onDiagnosticStep?.call('dashboard', 'read');
         final html = await shortcut();
         if (html != null) return html;
       } catch (_) {
@@ -102,7 +121,9 @@ class PortalScraper {
     final fetch = _fetchHtml;
     if (fetch != null) {
       try {
+        onDiagnosticStep?.call(_sectionFor(uri), 'read');
         final doc = parser.parse(await fetch(uri));
+        onDiagnosticStep?.call(_sectionFor(uri), 'parse');
         if (doc.querySelector(
                   'input[name="username"], input[type="password"]',
                 ) ==
@@ -114,7 +135,9 @@ class PortalScraper {
         // Fall through to navigation below.
       }
     }
-    return parser.parse(await _readPage(uri));
+    final html = await _readPage(uri);
+    onDiagnosticStep?.call(_sectionFor(uri), 'parse');
+    return parser.parse(html);
   }
 
   /// Semester results via background fetch when the portal serves the table
@@ -130,13 +153,17 @@ class PortalScraper {
     final fetch = _fetchHtml;
     if (fetch != null) {
       try {
+        onDiagnosticStep?.call('results', 'read');
         final doc = parser.parse(await fetch(uri));
+        onDiagnosticStep?.call('results', 'parse');
         if (_parsePreviousResults(doc).isNotEmpty) return doc;
       } catch (_) {
         // Fall through to the dashboard click below.
       }
     }
-    return parser.parse(await _readPage(uri));
+    final html = await _readPage(uri);
+    onDiagnosticStep?.call('results', 'parse');
+    return parser.parse(html);
   }
 
   // Probe against navigation on every refresh. Only verifiable course pages
@@ -161,9 +188,11 @@ class PortalScraper {
     // that answers every course URL with the same page.
     final seenIdentities = <String>{};
     try {
+      onDiagnosticStep?.call(sectionLabel, 'read');
       final fetched = await _fetchHtml(links.first);
       final navigated = await _readPage(links.first);
       pages[0] = navigated;
+      onDiagnosticStep?.call(sectionLabel, 'parse');
       final probeCourse = parseCourse(parser.parse(fetched));
       if (!hasCourseStructure(parser.parse(fetched)) ||
           jsonEncode(probeCourse) !=
@@ -186,6 +215,7 @@ class PortalScraper {
           )
             (() async {
               try {
+                onDiagnosticStep?.call(sectionLabel, 'read');
                 return (index, await _fetchHtml(links[index]));
               } catch (_) {
                 // Failed fetches are retried by ordinary navigation below.
@@ -195,6 +225,7 @@ class PortalScraper {
         ]);
         for (final (index, html) in fetchedPair) {
           if (html == null) continue;
+          onDiagnosticStep?.call(sectionLabel, 'parse');
           final page = parser.parse(html);
           final identity = courseIdentity(parseCourse(page));
           var matches = identity.isNotEmpty;
@@ -290,15 +321,18 @@ class PortalScraper {
     }
 
     onProgress?.call('Reading your profile');
+    onDiagnosticStep?.call('dashboard', 'read');
     // A previous sync normally leaves the browser on result history. Always
     // return to the signed dashboard so refreshes rediscover every current
     // attendance, CIE, fee and history link before scraping.
     final dashboard = await _readDashboard();
+    onDiagnosticStep?.call('dashboard', 'parse');
     final document = parser.parse(dashboard);
     final result = <String, dynamic>{};
     final profileWatch = Stopwatch()..start();
     unawaited(FirebasePerformanceTraces.startSection('profile'));
     if (FirebaseFeatureFlags.sectionEnabled('profile')) {
+      onDiagnosticStep?.call('profile', 'parse');
       _parseStudentSummary(document, result);
     }
     if (FirebaseFeatureFlags.sectionEnabled('fees')) {
@@ -375,6 +409,7 @@ class PortalScraper {
       ),
     );
     if (FirebaseFeatureFlags.sectionEnabled('results')) {
+      onDiagnosticStep?.call('results', 'read');
       onProgress?.call('Syncing semester results');
     }
     final resultsWatch = Stopwatch()..start();
@@ -386,6 +421,7 @@ class PortalScraper {
         recordSection('results', 'disabled');
       } else {
         resultsDocument = await _readResultsPage(resultLink);
+        onDiagnosticStep?.call('results', 'parse');
         result['prevResults'] = _parsePreviousResults(resultsDocument);
         final count = (result['prevResults'] as List).length;
         recordSection(
@@ -415,6 +451,7 @@ class PortalScraper {
     final attendanceWatch = Stopwatch()..start();
     unawaited(FirebasePerformanceTraces.startSection('attendance'));
     if (attendanceLinks.isNotEmpty) {
+      onDiagnosticStep?.call('attendance', 'read');
       onProgress?.call('Syncing attendance');
     }
     final attendancePages = await _coursePages(
@@ -438,6 +475,7 @@ class PortalScraper {
         final attendanceDocument = parser.parse(
           attendancePages[index] ?? await _readPage(uri),
         );
+        onDiagnosticStep?.call('attendance', 'parse');
         final item = _parseAttendance(attendanceDocument);
         if (_hasCourseIdentity('${item['code']} ${item['name']}') &&
             _hasAttendanceStructure(attendanceDocument)) {
@@ -504,6 +542,7 @@ class PortalScraper {
     );
     _checkActive();
     if (attendance.isNotEmpty && onAttendanceReady != null) {
+      onDiagnosticStep?.call('attendance', 'checkpoint');
       await onAttendanceReady!({
         'attendance': attendance,
         '_sync': {
@@ -535,7 +574,10 @@ class PortalScraper {
     var invalidMarksPages = 0;
     final marksWatch = Stopwatch()..start();
     unawaited(FirebasePerformanceTraces.startSection('marks'));
-    if (marksLinks.isNotEmpty) onProgress?.call('Syncing internal marks');
+    if (marksLinks.isNotEmpty) {
+      onDiagnosticStep?.call('marks', 'read');
+      onProgress?.call('Syncing internal marks');
+    }
     final marksPages = await _coursePages(
       marksLinks,
       document,
@@ -550,10 +592,12 @@ class PortalScraper {
     for (var index = 0; index < marksLinks.length; index++) {
       final uri = marksLinks[index];
       _checkActive();
+      final previousCount = marks.length;
       try {
         final marksDocument = parser.parse(
           marksPages[index] ?? await _readPage(uri),
         );
+        onDiagnosticStep?.call('marks', 'parse');
         final item = _parseMarks(marksDocument);
         if (_hasCourseIdentity(item['name'].toString()) &&
             _marksCells(marksDocument).isNotEmpty) {
@@ -564,6 +608,29 @@ class PortalScraper {
       } catch (error) {
         marksFailures++;
         marksFailureReason = portalFailureReason(error);
+      }
+      // Persist each completed course before the next browser navigation:
+      // a slow course or optional section must not discard fresh marks.
+      if (marks.length > previousCount && onMarksReady != null) {
+        onDiagnosticStep?.call('marks', 'checkpoint');
+        await onMarksReady!({
+          'marks': List<Map<String, dynamic>>.of(marks),
+          '_sync': {
+            'version': 1,
+            'outcome': 'partial',
+            'duration_ms': syncWatch.elapsedMilliseconds,
+            'sections': {
+              ...sections,
+              'marks': {
+                'status': 'partial',
+                'count': marks.length,
+                'attempted': marksLinks.length,
+              },
+              for (final name in ['fees', 'proctor', 'timetable', 'seating'])
+                name: {'status': 'pending'},
+            },
+          },
+        });
       }
     }
     marksWatch.stop();
@@ -600,6 +667,7 @@ class PortalScraper {
       orElse: () => fallback,
     );
     if (FirebaseFeatureFlags.sectionEnabled('proctor')) {
+      onDiagnosticStep?.call('proctor', 'read');
       onProgress?.call('Syncing proctor updates');
     }
     final proctorWatch = Stopwatch()..start();
@@ -649,6 +717,7 @@ class PortalScraper {
     if (!FirebaseFeatureFlags.sectionEnabled('fees')) {
       recordSection('fees', 'disabled');
     } else if (feeLink.isNotEmpty) {
+      onDiagnosticStep?.call('fees', 'read');
       onProgress?.call('Syncing fee history');
       final feeWatch = Stopwatch()..start();
       unawaited(FirebasePerformanceTraces.startSection('fees'));
@@ -716,6 +785,7 @@ class PortalScraper {
         failureReason: 'missing_links',
       );
     } else {
+      onDiagnosticStep?.call('timetable', 'read');
       onProgress?.call('Syncing timetable');
       try {
         final timetableDocument = await _readSinglePage(
@@ -755,6 +825,7 @@ class PortalScraper {
       result['seating'] = <dynamic>[];
       recordSection('seating', 'empty');
     } else {
+      onDiagnosticStep?.call('seating', 'read');
       onProgress?.call('Syncing exam seating');
       try {
         final seatingDocument = await _readSinglePage(

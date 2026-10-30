@@ -11,6 +11,16 @@ jobs:
     steps:
       - uses: actions/checkout@v5
 
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install GA4 report test dependency
+        run: python -m pip install -r scripts/requirements-ga4.txt
+
+      - name: Test release validators and GA4 report
+        run: python -m unittest discover -s scripts/tests -p 'test_*.py' -v
+
       - uses: actions/setup-java@v5
         with:
           distribution: temurin

@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:io';
 
 import 'package:flutter/material.dart';
 import 'package:flutter_inappwebview/flutter_inappwebview.dart';
@@ -46,6 +47,8 @@ class PortalLoginScreen extends StatefulWidget {
     this.reuseSession = false,
     this.silent = false,
     this.onFinished,
+    this.browserForTesting,
+    this.browserBuilderForTesting,
   });
 
   final String? initialUsn;
@@ -63,15 +66,35 @@ class PortalLoginScreen extends StatefulWidget {
   /// use the Navigator when no callback is supplied.
   final ValueChanged<bool>? onFinished;
 
+  @visibleForTesting
+  final Widget? browserForTesting;
+
+  @visibleForTesting
+  final Widget Function({
+    required ValueChanged<Uri?> onLoadStop,
+    required ValueChanged<bool> onReceivedError,
+    required VoidCallback onNavigationStart,
+    required ValueChanged<Object> onBrowserFailure,
+    required void Function({
+      required bool isMainFrame,
+      required int? statusCode,
+    })
+    onReceivedHttpError,
+  })?
+  browserBuilderForTesting;
+
   @override
   State<PortalLoginScreen> createState() => _PortalLoginScreenState();
 }
 
 class _PortalLoginScreenState extends State<PortalLoginScreen>
     with WidgetsBindingObserver {
-  final PortalSession _session = PortalSession();
+  late final PortalSession _session = PortalSession();
   bool _scrapeStarted = false;
   bool _finished = false;
+  bool _deadlineReached = false;
+  bool _initialPageReached = false;
+  bool _initialNavigationStarted = false;
   bool _showPortal = false;
   String _stage = 'Getting things ready';
   String _detail = 'This usually takes a few seconds.';
@@ -79,6 +102,7 @@ class _PortalLoginScreenState extends State<PortalLoginScreen>
   final Stopwatch _flowWatch = Stopwatch();
   Timer? _attentionTimer;
   Timer? _hardTimeoutTimer;
+  Timer? _initialConnectionTimer;
   bool _flowStarted = false;
   bool _terminalOutcomeRecorded = false;
   Future<void>? _startEvent;
@@ -86,6 +110,10 @@ class _PortalLoginScreenState extends State<PortalLoginScreen>
     36,
   );
   String _diagnosticStageValue = 'getting_ready';
+  String _failureSection = 'dashboard';
+  String _failureStep = 'authenticate';
+  bool _cacheOperation = false;
+  bool _hadCachedData = false;
   final Set<String> _recordedAttention = {};
 
   String get _diagnosticStage => _diagnosticStageValue;
@@ -94,6 +122,175 @@ class _PortalLoginScreenState extends State<PortalLoginScreen>
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
+    _hadCachedData = Provider.of<SisData>(context, listen: false).hasData;
+    // Include platform-view startup in the deadline, not only page loading.
+    _flowWatch.start();
+    _flowStarted = true;
+    _startEvent = SyncDiagnostics.recordLoginStarted(
+      refresh: widget.reuseSession,
+      flowId: _flowId,
+    );
+    _attentionTimer = Timer(const Duration(seconds: 45), () {
+      unawaited(_recordAttention('timeout'));
+    });
+    _hardTimeoutTimer = Timer(const Duration(seconds: 75), _handleDeadline);
+  }
+
+  bool _isInitialPortalPage(Uri? uri) =>
+      uri != null &&
+      uri.scheme.toLowerCase() == 'https' &&
+      uri.host.toLowerCase() == PortalSession.loginUri.host.toLowerCase() &&
+      uri.port == PortalSession.loginUri.port &&
+      uri.path.startsWith('/newparents/');
+
+  void _markInitialPageReached(Uri? uri) {
+    if (_finished || _deadlineReached || !_isInitialPortalPage(uri)) return;
+    _initialPageReached = true;
+    _initialConnectionTimer?.cancel();
+    _initialConnectionTimer = null;
+  }
+
+  void _stopDeadlineTimers() {
+    _attentionTimer?.cancel();
+    _hardTimeoutTimer?.cancel();
+    _initialConnectionTimer?.cancel();
+  }
+
+  void _handleInitialConnectionDeadline() {
+    if (!_initialNavigationStarted) return;
+    _handleInitialConnectionFailure(
+      TimeoutException('Initial portal page deadline exceeded'),
+    );
+  }
+
+  void _startInitialConnectionDeadline() {
+    if (_finished ||
+        !mounted ||
+        _deadlineReached ||
+        _initialNavigationStarted ||
+        _initialPageReached) {
+      return;
+    }
+    _initialNavigationStarted = true;
+    _initialConnectionTimer?.cancel();
+    _initialConnectionTimer = Timer(
+      const Duration(seconds: 15),
+      _handleInitialConnectionDeadline,
+    );
+  }
+
+  void _handleInitialConnectionFailure(Object error) {
+    if (_finished ||
+        !mounted ||
+        _deadlineReached ||
+        !_initialNavigationStarted ||
+        _initialPageReached) {
+      return;
+    }
+    _deadlineReached = true;
+    _stopDeadlineTimers();
+    _reportFailure(error);
+    unawaited(_recordFinish(error is TimeoutException ? 'timeout' : 'error'));
+    if (error is TimeoutException) unawaited(_recordAttention('timeout'));
+    if (widget.silent) {
+      _finish(false);
+      return;
+    }
+    setState(() {
+      _showPortal = false;
+      _error = 'connection';
+      _stage = 'Unable to connect to the website';
+      _detail =
+          'The website is taking too long to respond. Please try again later.';
+      if (_hadCachedData) {
+        _detail += ' Your saved information is still available.';
+      }
+    });
+  }
+
+  void _handleInitialHttpError({
+    required bool isMainFrame,
+    required int? statusCode,
+  }) {
+    if (!isMainFrame ||
+        statusCode == null ||
+        statusCode < 400 ||
+        !_initialNavigationStarted ||
+        _initialPageReached ||
+        _deadlineReached ||
+        _finished) {
+      return;
+    }
+    _handleInitialConnectionFailure(
+      PortalRequestException(PortalSession.loginUri, 'HTTP error'),
+    );
+  }
+
+  void _handleDeadline() {
+    if (_finished || !mounted || _deadlineReached) return;
+    _deadlineReached = true;
+    _stopDeadlineTimers();
+    unawaited(_recordAttention('timeout'));
+    unawaited(_recordFinish('timeout'));
+    _reportFailure(TimeoutException('Sync deadline exceeded'));
+    if (widget.silent) {
+      _finish(false);
+    } else {
+      setState(() {
+        _showPortal = false;
+        _error = 'timeout';
+        _stage = !_initialPageReached
+            ? 'Unable to connect to the website'
+            : _scrapeStarted
+            ? 'Update took too long'
+            : 'Sign-in took too long';
+        _detail = !_initialPageReached
+            ? 'The website is taking too long to respond. Please try again later.'
+            : _scrapeStarted
+            ? 'Please try again in a little while.'
+            : 'Please try signing in again.';
+        if (_hadCachedData) {
+          _detail += ' Your saved information is still available.';
+        }
+      });
+    }
+  }
+
+  void _reportFailure(Object error) {
+    final reason =
+        _cacheOperation &&
+            _failureStep == 'persist' &&
+            error is! TimeoutException
+        ? 'cache_write'
+        : portalFailureReason(error);
+    if (_cacheOperation) {
+      unawaited(
+        SyncDiagnostics.recordOperationalFailure(
+          operation: 'cache',
+          stage: _diagnosticStage,
+          reason: reason,
+          exceptionKind: portalFailureKind(error),
+          refresh: widget.reuseSession,
+          section: _failureSection,
+          step: _failureStep,
+          durationMs: _flowWatch.elapsedMilliseconds,
+          hasCachedData: _hadCachedData,
+        ),
+      );
+    } else {
+      unawaited(
+        SyncDiagnostics.recordFailure(
+          refresh: widget.reuseSession,
+          stage: _diagnosticStage,
+          reason: reason,
+          exceptionKind: portalFailureKind(error),
+          section: _failureSection,
+          step: _failureStep,
+          durationMs: _flowWatch.elapsedMilliseconds,
+          hasCachedData: _hadCachedData,
+        ),
+      );
+    }
   }
 
   Future<void> _recordAttention(String reason) async {
@@ -132,8 +329,7 @@ class _PortalLoginScreenState extends State<PortalLoginScreen>
 
   @override
   void dispose() {
-    _attentionTimer?.cancel();
-    _hardTimeoutTimer?.cancel();
+    _stopDeadlineTimers();
     WidgetsBinding.instance.removeObserver(this);
     if (_flowStarted && !_finished) {
       unawaited(_recordAttention('disposed'));
@@ -146,8 +342,7 @@ class _PortalLoginScreenState extends State<PortalLoginScreen>
 
   void _finish(bool result) {
     if (_finished) return;
-    _attentionTimer?.cancel();
-    _hardTimeoutTimer?.cancel();
+    _stopDeadlineTimers();
     _finished = true;
     final callback = widget.onFinished;
     if (callback != null) {
@@ -162,7 +357,7 @@ class _PortalLoginScreenState extends State<PortalLoginScreen>
       debugPrint('Portal timing: ${_flowWatch.elapsedMilliseconds}ms - $stage');
       return true;
     }());
-    if (!mounted || _finished) return;
+    if (!mounted || _finished || _deadlineReached) return;
     setState(() {
       _stage = stage;
       if (detail != null) _detail = detail;
@@ -170,17 +365,13 @@ class _PortalLoginScreenState extends State<PortalLoginScreen>
   }
 
   Future<void> _handleBrowserFailure(Object error) async {
-    if (_finished || _scrapeStarted) return;
-    unawaited(
-      SyncDiagnostics.recordFailure(
-        refresh: widget.reuseSession,
-        stage: _diagnosticStage,
-        reason: portalFailureReason(error),
-      ),
-    );
-    unawaited(_recordFinish('error'));
-    if (!mounted || _finished) return;
+    if (_finished || _deadlineReached || _scrapeStarted) return;
+    _initialConnectionTimer?.cancel();
+    _initialConnectionTimer = null;
+    _reportFailure(error);
+    if (!mounted || _finished || _deadlineReached) return;
     if (widget.silent) {
+      unawaited(_recordFinish('error'));
       _finish(false);
       return;
     }
@@ -193,7 +384,7 @@ class _PortalLoginScreenState extends State<PortalLoginScreen>
   }
 
   Future<void> _scrapeAndCache() async {
-    if (_scrapeStarted) return;
+    if (_scrapeStarted || _deadlineReached) return;
     _scrapeStarted = true;
     final scrapeWatch = Stopwatch()..start();
     if (!FirebaseFeatureFlags.portalSyncEnabled) {
@@ -203,9 +394,25 @@ class _PortalLoginScreenState extends State<PortalLoginScreen>
     }
     _diagnosticStageValue = 'scraping';
     _updateStage('Login complete', detail: 'Updating your information.');
-    var scrapeCompleted = false;
     if (!mounted || _finished) return;
     final sisData = Provider.of<SisData>(context, listen: false);
+    Future<void> applyData(
+      Map<String, dynamic> data, {
+      String section = 'unknown',
+    }) async {
+      if (!mounted || _finished || _deadlineReached) return;
+      _cacheOperation = true;
+      _failureSection = section;
+      _failureStep = 'apply';
+      await sisData.applyPortalData(
+        data,
+        widget.initialUsn ?? '',
+        widget.initialDob ?? '',
+        onStage: (step) => _failureStep = step,
+      );
+      _cacheOperation = false;
+    }
+
     try {
       // The portal currently rejects replay of its browser session from AWS.
       // Scraping directly in this authenticated WebView avoids that failed
@@ -213,16 +420,28 @@ class _PortalLoginScreenState extends State<PortalLoginScreen>
       final data = await PortalScraper(
         _session,
         onProgress: (stage) => _updateStage(stage),
-        isActive: () => mounted && !_finished,
-        onAttendanceReady: (data) async {
-          if (!mounted || _finished || !widget.reuseSession || !sisData.hasData) {
+        isActive: () => mounted && !_finished && !_deadlineReached,
+        onDiagnosticStep: (section, step) {
+          _failureSection = section;
+          _failureStep = step;
+        },
+        onMarksReady: (data) async {
+          if (!mounted ||
+              _finished ||
+              !widget.reuseSession ||
+              !sisData.hasData) {
             return;
           }
-          await sisData.applyPortalData(
-            data,
-            widget.initialUsn ?? '',
-            widget.initialDob ?? '',
-          );
+          await applyData(data, section: 'marks');
+        },
+        onAttendanceReady: (data) async {
+          if (!mounted ||
+              _finished ||
+              !widget.reuseSession ||
+              !sisData.hasData) {
+            return;
+          }
+          await applyData(data, section: 'attendance');
           assert(() {
             debugPrint(
               'Portal attendance available in ${scrapeWatch.elapsedMilliseconds}ms',
@@ -231,7 +450,7 @@ class _PortalLoginScreenState extends State<PortalLoginScreen>
           }());
         },
       ).scrapeAll();
-      if (!mounted || _finished) return;
+      if (!mounted || _finished || _deadlineReached) return;
       assert(() {
         debugPrint(
           'Portal scraper sections: '
@@ -256,16 +475,12 @@ class _PortalLoginScreenState extends State<PortalLoginScreen>
           'scraper returned incomplete portal data',
         );
       }
-      scrapeCompleted = true;
       _diagnosticStageValue = 'finishing';
-      await sisData.applyPortalData(
-        data,
-        widget.initialUsn ?? '',
-        widget.initialDob ?? '',
-      );
+      await applyData(data);
+      if (!mounted || _finished || _deadlineReached) return;
       unawaited(
         SyncDiagnostics.recordSummary(
-          Map<String, dynamic>.from((data['_sync'] as Map?) ?? const {}),
+          sisData.syncMetadata,
           refresh: widget.reuseSession,
         ),
       );
@@ -284,30 +499,10 @@ class _PortalLoginScreenState extends State<PortalLoginScreen>
         _finish(true);
       }
     } catch (error) {
-      if (scrapeCompleted) {
-        unawaited(
-          SyncDiagnostics.recordOperationalFailure(
-            operation: 'cache',
-            stage: _diagnosticStage,
-            reason: 'cache_write',
-            refresh: widget.reuseSession,
-          ),
-        );
-      } else {
-        unawaited(
-          SyncDiagnostics.recordFailure(
-            refresh: widget.reuseSession,
-            stage: _diagnosticStage,
-            reason: portalFailureReason(error),
-          ),
-        );
-      }
+      if (_finished || _deadlineReached || !mounted) return;
+      _reportFailure(error);
       unawaited(_recordFinish('error'));
-      assert(() {
-        final detail = error is PortalRequestException ? error.reason : '';
-        debugPrint('Portal scraper failed: ${error.runtimeType} $detail');
-        return true;
-      }());
+      debugPrint('Portal update failed (${portalFailureReason(error)}).');
       if (mounted) {
         if (widget.silent) {
           // No UI is visible in silent mode; report failure to the caller
@@ -329,7 +524,7 @@ class _PortalLoginScreenState extends State<PortalLoginScreen>
 
   Future<void> _checkSession() async {
     final authenticated = await _session.isAuthenticated();
-    if (!mounted) return;
+    if (!mounted || _finished || _deadlineReached) return;
     if (authenticated) await _scrapeAndCache();
     if (!authenticated) {
       _diagnosticStageValue = 'signing_in';
@@ -493,7 +688,7 @@ class _PortalLoginScreenState extends State<PortalLoginScreen>
       } else if (attempt == 2) {
         await Future.delayed(const Duration(milliseconds: 900));
       }
-      if (!mounted || _finished || _scrapeStarted) return;
+      if (!mounted || _finished || _deadlineReached || _scrapeStarted) return;
       if (attempt > 0 && await _portalFormPresent(controller)) return;
       try {
         await controller.evaluateJavascript(source: script);
@@ -536,67 +731,105 @@ class _PortalLoginScreenState extends State<PortalLoginScreen>
         children: [
           PortalBrowserViewport(
             hidden: hidePortal,
-            child: InAppWebView(
-              initialUrlRequest: URLRequest(url: WebUri('about:blank')),
-              initialSettings: InAppWebViewSettings(
-                javaScriptEnabled: true,
-                javaScriptCanOpenWindowsAutomatically: true,
-                mediaPlaybackRequiresUserGesture: false,
-                domStorageEnabled: true,
-                databaseEnabled: true,
-                thirdPartyCookiesEnabled: true,
-              ),
-              onWebViewCreated: (controller) async {
-                _flowWatch.start();
-                _flowStarted = true;
-                _startEvent = SyncDiagnostics.recordLoginStarted(
-                  refresh: widget.reuseSession,
-                  flowId: _flowId,
-                );
-                _attentionTimer = Timer(const Duration(seconds: 45), () {
-                  unawaited(_recordAttention('timeout'));
-                });
-                _hardTimeoutTimer = Timer(const Duration(seconds: 75), () {
-                  if (_finished) return;
-                  unawaited(_recordAttention('timeout'));
-                  unawaited(_recordFinish('timeout'));
-                  _finish(false);
-                });
-                try {
-                  _session.attachController(controller);
-                  if (!widget.reuseSession) await _session.clear();
-                  await controller.loadUrl(
-                    urlRequest: URLRequest(
-                      url: WebUri(PortalSession.loginUri.toString()),
-                    ),
-                  );
-                } catch (error) {
-                  await _handleBrowserFailure(error);
-                }
-              },
-              onUpdateVisitedHistory: (_, url, __) {
-                _session.rememberPage(url);
-              },
-              onLoadStop: (controller, __) async {
-                // Scraping deliberately navigates this same hidden WebView.
-                // Treat those page loads as scraper-owned; running the login
-                // detector in parallel can redirect the browser and starve the
-                // navigation that is currently being read.
-                if (_finished || _scrapeStarted) return;
-                try {
-                  _session.rememberPage(await controller.getUrl());
-                  await _prefillPortalForm(controller);
-                  // onLoadStop callbacks pile up across the login redirect
-                  // chain and land after the scrape starts. Re-check here so
-                  // stale callbacks cannot inject session probes that race
-                  // the scraper's navigations on this same WebView.
-                  if (_finished || _scrapeStarted) return;
-                  await _checkSession();
-                } catch (error) {
-                  await _handleBrowserFailure(error);
-                }
-              },
-            ),
+            child: _deadlineReached
+                ? const SizedBox.shrink()
+                : widget.browserBuilderForTesting?.call(
+                        onLoadStop: _markInitialPageReached,
+                        onNavigationStart: _startInitialConnectionDeadline,
+                        onBrowserFailure: (error) {
+                          unawaited(_handleBrowserFailure(error));
+                        },
+                        onReceivedHttpError: _handleInitialHttpError,
+                        onReceivedError: (isMainFrame) {
+                          if (isMainFrame &&
+                              _initialNavigationStarted &&
+                              !_initialPageReached) {
+                            _handleInitialConnectionFailure(
+                              const SocketException(
+                                'Initial portal page failed',
+                              ),
+                            );
+                          }
+                        },
+                      ) ??
+                      widget.browserForTesting ??
+                      InAppWebView(
+                        initialUrlRequest: URLRequest(
+                          url: WebUri('about:blank'),
+                        ),
+                        initialSettings: InAppWebViewSettings(
+                          javaScriptEnabled: true,
+                          javaScriptCanOpenWindowsAutomatically: true,
+                          mediaPlaybackRequiresUserGesture: false,
+                          domStorageEnabled: true,
+                          databaseEnabled: true,
+                          thirdPartyCookiesEnabled: true,
+                        ),
+                        onWebViewCreated: (controller) async {
+                          if (_finished || _deadlineReached) return;
+                          try {
+                            _session.attachController(controller);
+                            if (!widget.reuseSession) await _session.clear();
+                            if (!mounted || _finished || _deadlineReached) {
+                              return;
+                            }
+                            _startInitialConnectionDeadline();
+                            await controller.loadUrl(
+                              urlRequest: URLRequest(
+                                url: WebUri(PortalSession.loginUri.toString()),
+                              ),
+                            );
+                          } catch (error) {
+                            await _handleBrowserFailure(error);
+                          }
+                        },
+                        onUpdateVisitedHistory: (_, url, __) {
+                          _session.rememberPage(url);
+                        },
+                        onLoadStop: (controller, __) async {
+                          _markInitialPageReached(__?.uriValue);
+                          // Scraping deliberately navigates this same hidden WebView.
+                          // Treat those page loads as scraper-owned; running the login
+                          // detector in parallel can redirect the browser and starve the
+                          // navigation that is currently being read.
+                          if (_finished || _deadlineReached || _scrapeStarted) {
+                            return;
+                          }
+                          try {
+                            _session.rememberPage(await controller.getUrl());
+                            await _prefillPortalForm(controller);
+                            // onLoadStop callbacks pile up across the login redirect
+                            // chain and land after the scrape starts. Re-check here so
+                            // stale callbacks cannot inject session probes that race
+                            // the scraper's navigations on this same WebView.
+                            if (_finished ||
+                                _deadlineReached ||
+                                _scrapeStarted) {
+                              return;
+                            }
+                            await _checkSession();
+                          } catch (error) {
+                            await _handleBrowserFailure(error);
+                          }
+                        },
+                        onReceivedError: (_, request, __) {
+                          if (request.isForMainFrame == true &&
+                              _initialNavigationStarted &&
+                              !_initialPageReached) {
+                            _handleInitialConnectionFailure(
+                              const SocketException(
+                                'Initial portal page failed',
+                              ),
+                            );
+                          }
+                        },
+                        onReceivedHttpError: (_, request, errorResponse) {
+                          _handleInitialHttpError(
+                            isMainFrame: request.isForMainFrame == true,
+                            statusCode: errorResponse.statusCode,
+                          );
+                        },
+                      ),
           ),
           if (!widget.silent && !_showPortal)
             Positioned.fill(
@@ -664,6 +897,10 @@ class _PortalLoginScreenState extends State<PortalLoginScreen>
                                 const SizedBox(height: 28),
                                 FilledButton.icon(
                                   onPressed: () {
+                                    if (_deadlineReached) {
+                                      _finish(false);
+                                      return;
+                                    }
                                     unawaited(
                                       _recordAttention('manual_portal'),
                                     );
@@ -672,7 +909,11 @@ class _PortalLoginScreenState extends State<PortalLoginScreen>
                                     }
                                   },
                                   icon: const Icon(Icons.open_in_browser),
-                                  label: const Text('Show page'),
+                                  label: Text(
+                                    _deadlineReached
+                                        ? 'Back to sign in'
+                                        : 'Show page',
+                                  ),
                                   style: FilledButton.styleFrom(
                                     backgroundColor: const Color(0xffba3237),
                                   ),

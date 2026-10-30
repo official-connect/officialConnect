@@ -43,7 +43,9 @@ class FeesCard extends StatelessWidget {
             collapsedIconColor: isDark ? Colors.white : Colors.black,
             title: Text(
               feeData.amountPaid,
-              style: buttonTrailing.copyWith(fontSize: width * 0.06),
+              style: buttonTrailing.copyWith(
+                fontSize: (width * 0.06).clamp(18.0, 24.0),
+              ),
             ),
             subtitle: Padding(
               padding: EdgeInsets.symmetric(
@@ -65,10 +67,12 @@ class FeesCard extends StatelessWidget {
                   mainAxisAlignment: MainAxisAlignment.spaceBetween,
                   children: [
                     Text("Challan No:", style: title),
-                    Text(
-                      feeData.challanNumber,
-                      style: subtitle,
-                      textAlign: TextAlign.end,
+                    Expanded(
+                      child: Text(
+                        feeData.challanNumber,
+                        style: subtitle,
+                        textAlign: TextAlign.end,
+                      ),
                     ),
                   ],
                 ), //ChallanNo

@@ -1,4 +1,5 @@
 import 'dart:convert';
+import 'dart:async';
 
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -7,6 +8,7 @@ import 'package:official_connect/Screens/login_screen/login_screen.dart';
 import 'package:official_connect/Screens/login_screen/student_home/results_screen/see_sub_screen/latest_results.dart';
 import 'package:official_connect/Screens/login_screen/student_home/unified_screen.dart';
 import 'package:official_connect/Services/exam_result_scraper.dart';
+import 'package:official_connect/Services/sync_diagnostics.dart';
 import 'package:provider/provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
@@ -51,6 +53,71 @@ void main() {
     expect(sisData.hasData, isTrue);
     expect(sisData.usn, 'OFFLINE01');
   });
+
+  test(
+    'failed marks update retains cached marks and remains retryable',
+    () async {
+      final sisData = await _restoreCachedStudent();
+      final previous = jsonEncode(sisData.data['marks']);
+      await sisData.applyPortalData(
+        {
+          'marks': <dynamic>[],
+          '_sync': {
+            'sections': {
+              'attendance': {'status': 'ok'},
+              'marks': {'status': 'error'},
+              'timetable': {'status': 'ok'},
+              'seating': {'status': 'ok'},
+            },
+          },
+        },
+        'OFFLINE01',
+        '2000-01-01',
+      );
+      expect(jsonEncode(sisData.data['marks']), previous);
+      expect(sisData.needToUpdate, isTrue);
+      expect(sisData.hasSyncIssues, isTrue);
+      sisData.dispose();
+      final restored = SisData();
+      await pumpEventQueue(times: 30);
+      expect(jsonEncode(restored.data['marks']), previous);
+      expect(restored.needToUpdate, isTrue);
+      restored.dispose();
+    },
+  );
+
+  test(
+    'cached data restores while telemetry preference is unresponsive',
+    () async {
+      final seed = SisData();
+      await seed.loadDummyData();
+      await seed.applyPortalData(seed.data, 'OFFLINE01', '2000-01-01');
+      seed.dispose();
+      final pending = Completer<void>();
+      var toggleCalled = false;
+      SyncDiagnostics.configure(
+        null,
+        collectionToggle: (_) {
+          toggleCalled = true;
+          return pending.future;
+        },
+      );
+      final restored = SisData();
+      try {
+        await pumpEventQueue(times: 30);
+        expect(toggleCalled, isTrue);
+        expect(pending.isCompleted, isFalse);
+        expect(restored.attendances, isNotEmpty);
+        expect(restored.marks, isNotEmpty);
+        expect(restored.isValidData, isTrue);
+      } finally {
+        pending.complete();
+        await pumpEventQueue(times: 30);
+        SyncDiagnostics.configure(null);
+        restored.dispose();
+      }
+    },
+  );
 
   testWidgets('saved examination result opens without a network response', (
     tester,

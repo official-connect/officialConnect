@@ -7,10 +7,12 @@ Replaces the manual GA4 Realtime/exploration checks with the GA4 Data API:
   the GA4 UI — the Data API client only aggregates TOTAL/COUNT).
 - `event-check`: look for an event name (e.g. refresh_finished) in the
   last-30-min Realtime window (the Task 3/4 check).
+- `sync-reliability`: distinct GA4-reported user counts for failed syncs,
+  with rates over the observed login-start-or-failure population.
 
-Auth: uses Application Default Credentials — set GOOGLE_APPLICATION_CREDENTIALS
-to a service-account JSON key that has Viewer on the GA4 property. The key
-must NEVER live in the repo. Property id via --property or GA4_PROPERTY_ID.
+Auth: uses Application Default Credentials from an approved local sign-in or
+credential flow with Viewer access to the GA4 property. Property id via
+--property or GA4_PROPERTY_ID. Never store credential files in the repo.
 
 Requires: python3 -m venv .venv; .venv/bin/pip install -r scripts/requirements-ga4.txt
 Run: source .venv/bin/activate; python scripts/ga4_query.py ...
@@ -19,6 +21,7 @@ Run: source .venv/bin/activate; python scripts/ga4_query.py ...
 import argparse
 import os
 import sys
+from dataclasses import dataclass, field
 
 PROPERTY_ENV = "GA4_PROPERTY_ID"
 
@@ -123,6 +126,245 @@ SECTION_BASELINES_MS = {
 
 _SYNC_OK = {"ok", "complete", "success", "partial", "empty"}
 _SYNC_BAD = {"error", "timeout", "session_expired", "network_error"}
+
+
+@dataclass
+class _QueryResult:
+    users: int | None
+    rows: list = field(default_factory=list)
+    error: str | None = None
+    incomplete: list[str] = field(default_factory=list)
+
+
+def _ga4_types():
+    """Load protobuf request types only for commands that need the SDK."""
+    from google.analytics.data_v1beta import types
+    return types
+
+
+def _event_names_filter(types, names):
+    expressions = [types.FilterExpression(filter=types.Filter(
+        field_name="eventName", string_filter={"value": name}))
+        for name in names]
+    if len(expressions) == 1:
+        return expressions[0]
+    return types.FilterExpression(or_group=types.FilterExpressionList(
+        expressions=expressions))
+
+
+def _and_filters(types, *expressions):
+    if len(expressions) == 1:
+        return expressions[0]
+    return types.FilterExpression(and_group=types.FilterExpressionList(
+        expressions=list(expressions)))
+
+
+def _or_filters(types, *expressions):
+    if len(expressions) == 1:
+        return expressions[0]
+    return types.FilterExpression(or_group=types.FilterExpressionList(
+        expressions=list(expressions)))
+
+
+def _failure_filter(types, registered):
+    """Failed sync/login outcomes plus legacy operation failures."""
+    sync_outcomes = types.FilterExpression(filter=types.Filter(
+        field_name="customEvent:outcome",
+        in_list_filter={"values": [
+            "error", "partial", "timeout", "network_error", "session_expired",
+        ]}))
+    login_outcomes = types.FilterExpression(filter=types.Filter(
+        field_name="customEvent:outcome",
+        in_list_filter={"values": [
+            "error", "timeout", "network_error", "session_expired",
+        ]}))
+    # Keep event-specific outcome sets: partial is a sync result, while
+    # login_flow_finished's cancelled outcome is intentionally excluded.
+    event_specific = types.FilterExpression(or_group=types.FilterExpressionList(
+        expressions=[
+            _and_filters(types,
+                _event_names_filter(types, ["sync_section", "sync_finished"]),
+                sync_outcomes),
+            _and_filters(types,
+                _event_names_filter(types, ["login_flow_finished"]),
+                login_outcomes),
+            _event_names_filter(types, ["operation_failure"]),
+        ]))
+    exclusions = []
+    for name in ("customEvent:failure_reason", "customEvent:reason"):
+        if registered is not None and name in registered:
+            exclusions.append(types.FilterExpression(not_expression=
+                types.FilterExpression(filter=types.Filter(
+                    field_name=name, string_filter={"value": "cancelled"}))))
+    return _and_filters(types, event_specific, *exclusions)
+
+
+def _request(types, prop, dimensions, start, end, dimension_filter):
+    return types.RunReportRequest(
+        property=prop,
+        dimensions=[types.Dimension(name=name) for name in dimensions],
+        metrics=[types.Metric(name="totalUsers")],
+        date_ranges=[types.DateRange(start_date=start, end_date=end)],
+        dimension_filter=dimension_filter,
+        limit=100000,
+    )
+
+
+def _run_user_report(client, prop, dimensions, start, end, dimension_filter):
+    """Fetch every page and retain GA4 completeness metadata."""
+    types = _ga4_types()
+    rows, incomplete, offset = [], [], 0
+    try:
+        while True:
+            req = _request(types, prop, dimensions, start, end, dimension_filter)
+            req.offset = offset
+            response = client.run_report(req)
+            rows.extend(response.rows)
+            metadata = response.metadata
+            if metadata and metadata.subject_to_thresholding:
+                incomplete.append("GA4 thresholding applied")
+            if metadata and metadata.data_loss_from_other_row:
+                incomplete.append("GA4 grouped rows include an (other) loss bucket")
+            if metadata and metadata.sampling_metadatas:
+                incomplete.append("GA4 sampling applied")
+            row_count = response.row_count
+            if offset + len(response.rows) >= row_count:
+                break
+            if not response.rows:
+                incomplete.append(
+                    "GA4 returned an empty page before the reported row count was exhausted")
+                break
+            offset += len(response.rows)
+        users = None
+        if not dimensions:
+            if rows and rows[0].metric_values:
+                users = int(rows[0].metric_values[0].value or 0)
+            else:
+                users = 0
+        return _QueryResult(users=users, rows=rows,
+                            incomplete=sorted(set(incomplete)))
+    except Exception as exc:  # noqa: BLE001 - report partial access explicitly
+        return _QueryResult(users=None, rows=rows, error=str(exc),
+                            incomplete=sorted(set(incomplete)))
+
+
+def _registered_dimensions(client, prop):
+    """Return registered event-scoped custom dimensions, or unknown on error."""
+    from google.analytics.data_v1beta.types import GetMetadataRequest
+    try:
+        metadata = client.get_metadata(GetMetadataRequest(
+            name=f"{prop}/metadata"))
+        return {item.api_name for item in metadata.dimensions
+                if item.custom_definition}
+    except Exception:
+        return None
+
+
+def _cell(row, index):
+    return row.dimension_values[index].value if index < len(row.dimension_values) else ""
+
+
+def _print_query_status(label, result):
+    if result.error:
+        print(f"  {label}: unavailable ({result.error})")
+    elif result.incomplete:
+        print(f"  {label}: incomplete ({'; '.join(result.incomplete)})")
+
+
+def cmd_sync_reliability(args) -> int:
+    """Bounded distinct-user sync report; grouped rows intentionally overlap."""
+    client, prop = _client(), _property(args)
+    types = _ga4_types()
+    registered = _registered_dimensions(client, prop)
+    failure_filter = _failure_filter(types, registered)
+    print("Sync reliability — affected users")
+    print(f"Date range: {args.days_ago} through {args.end_date}")
+    print("Measure: GA4-reported users (installation proxy), not physical unique phones.")
+    print("No student reidentification; row user counts overlap and must not be summed.")
+
+    starts_filter = _event_names_filter(types, ["login_flow_started"])
+    starts = _run_user_report(client, prop, [], args.days_ago, args.end_date,
+        starts_filter)
+    failures = _run_user_report(client, prop, [], args.days_ago, args.end_date,
+        failure_filter)
+    population = _run_user_report(
+        client, prop, [], args.days_ago, args.end_date,
+        _or_filters(types, starts_filter, failure_filter))
+    print(f"Login-start users: {starts.users if starts.users is not None else 'unavailable'}")
+    print("Observed sync population (login starts or failed sync/login events): "
+          f"{population.users if population.users is not None else 'unavailable'}")
+    print(f"Users with failed sync/login event: {failures.users if failures.users is not None else 'unavailable'}")
+    _print_query_status("login starts", starts)
+    _print_query_status("observed sync population", population)
+    _print_query_status("failure union", failures)
+    can_rate = (population.users is not None and population.users > 0 and
+                failures.users is not None and not population.error and
+                not failures.incomplete and
+                not population.incomplete and
+                failures.users <= population.users)
+    if can_rate:
+        print("Affected-user rate: "
+              f"{failures.users / population.users:.1%} of observed sync users")
+    elif (population.users == 0 and not population.error and
+          not population.incomplete):
+        print("Affected-user rate: unavailable (no observed sync users in range)")
+    elif (population.users is not None and failures.users is not None and
+          failures.users > population.users):
+        print("Affected-user rate: withheld (failure count exceeds observed population)")
+    else:
+        print("Affected-user rate: withheld (query failed or GA4 data may be incomplete)")
+
+    dimensions = [
+        ("failure reason", "customEvent:failure_reason"),
+        ("failure outcome", "customEvent:outcome"),
+        ("failure stage", "customEvent:stage"),
+        ("legacy operation_failure reason", "customEvent:reason"),
+        ("section", "customEvent:section"),
+        ("processing step", "customEvent:failure_step"),
+        ("exception kind", "customEvent:exception_kind"),
+        ("cached data", "customEvent:has_cached_data"),
+        ("app version", "customEvent:app_version"),
+        ("device model", "deviceModel"),
+        ("operating system", "operatingSystemWithVersion"),
+    ]
+    available = []
+    for label, name in dimensions:
+        custom = name.startswith("customEvent:")
+        if custom and registered is not None and name not in registered:
+            print(f"Breakdown {label}: unavailable (GA4 custom dimension not registered)")
+            continue
+        if custom and registered is None and name == "customEvent:reason":
+            print("Breakdown legacy operation_failure reason: unavailable (could not verify registration)")
+            continue
+        available.append((label, name))
+    for label, dimension in available:
+        # Apply the event filter to each query. GA4 totalUsers in each grouped
+        # row is distinct for that bucket, but users can occur in many rows.
+        breakdown_filter = failure_filter
+        if dimension == "customEvent:reason":
+            breakdown_filter = _and_filters(types, failure_filter,
+                _event_names_filter(types, ["operation_failure"]))
+        result = _run_user_report(client, prop, [dimension], args.days_ago,
+                                  args.end_date, breakdown_filter)
+        if result.error:
+            print(f"Breakdown {label}: unavailable ({result.error})")
+            continue
+        print(f"Breakdown {label} (distinct users per bucket; overlapping):")
+        for row in result.rows:
+            value = _cell(row, 0) or "(unset)"
+            users = int(row.metric_values[0].value or 0)
+            rate = (
+                f"; {users / population.users:.1%} of observed sync users"
+                if can_rate and not result.incomplete and
+                users <= population.users
+                else ""
+            )
+            print(f"  {value}: {users}{rate}")
+        _print_query_status(label, result)
+    if registered is None:
+        print("Custom-dimension registration metadata unavailable; missing-dimension errors are reported per breakdown.")
+        print("Cancellation exclusion could not be verified; failure counts may include intentional cancellations.")
+    return 0 if (population.users is not None and failures.users is not None) else 2
 
 
 def _run(client, prop, dimensions, metrics, date, extra_filter=None):
@@ -334,6 +576,12 @@ def main(argv=None) -> int:
     health = sub.add_parser("daily-health", help="lightweight daily quality gate")
     health.add_argument("--date", default="yesterday")
     health.set_defaults(func=cmd_daily_health)
+
+    reliability = sub.add_parser(
+        "sync-reliability", help="distinct affected-user sync report")
+    reliability.add_argument("--days-ago", default="28daysAgo")
+    reliability.add_argument("--end-date", default="yesterday")
+    reliability.set_defaults(func=cmd_sync_reliability)
 
     args = parser.parse_args(argv)
     return args.func(args)
