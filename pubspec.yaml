@@ -43,7 +43,7 @@ dependencies:
   syncfusion_flutter_datepicker: ^31.2.5
   cached_network_image: ^3.2.0
   auto_size_text: ^3.0.0
-  url_launcher: ^6.0.20
+  url_launcher: ^6.3.3
   animated_text_kit: ^4.2.1
   string_similarity: ^2.0.0
   fluttertoast: ^10.0.0
